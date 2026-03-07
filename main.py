@@ -253,7 +253,7 @@ def main():
                     if detail:
                         item.update(detail) # img_urls 等を更新
                     
-                    # img_urls がない場合は一覧의 img_url を使う
+                    # img_urls がない場合は一覧の img_url を使う
                     current_img_urls = item.get("img_urls", [])
                     if not current_img_urls and item.get("img_url"):
                         current_img_urls = [item["img_url"]]
@@ -305,6 +305,7 @@ def main():
                     print(f"       -> 価格(送料込): ¥{total_price:,} (本体:¥{item['price_int']:,} + 送料:¥{ship_fee:,}) / 状態: {item.get('condition', '不明')}")
 
                     if total_price < tentative_best_price:
+                        total_price = total_price # skip check
                         tentative_best_price = total_price
                         tentative_best_item = item
                         print(f"       >>> 暫定最安値を更新しました！ (¥{total_price:,})")
@@ -389,7 +390,7 @@ def main():
                     else:
                         print(f"    [SKIP] Amazon候補一致率不足 ({a_score:.1f}%): {a_item['title'][:20]}...")
             else:
-                print("    [!] Amazonで商品が見つかりませんでした。")
+                print("    [!] Amazonで商品が見つかりませんでした。スペックは現状のまま（不明）維持します。")
 
         if weight_final == "不明" and raw_w != "不明": weight_final = truncate_weight(raw_w)
         if dims_final == "不明" and raw_d != "不明": dims_final = adjust_dimensions(raw_d)
