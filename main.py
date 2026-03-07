@@ -210,7 +210,7 @@ def main():
                     print(f"[*] {platform}: 検索結果 0 件でした。")
                     return
 
-                print(f"[*] {platform}: {len(candidates)} 件の候補を詳細判定中 (基準: 加重平均 73%以上)")
+                print(f"[*] {platform}: {len(candidates)} 件の候補を詳細判定中 (基準: 加重平均 70%以上)")
                 
                 # 1. キーワードフィルタリング
                 threshold = max(1, len(search_keywords) // 2)
@@ -281,7 +281,7 @@ def main():
                         img_filename = f"{platform}_{item_title[:10]}_{i}_score_{s:.1f}.jpg".replace("/", "_").replace(" ", "_")
                         save_debug_image(ji.get("img_url"), debug_folder, img_filename)
 
-                    if final_score < 73:
+                    if final_score < 70:
                         print(f"    [REJECT] 最終加重スコア不足 ({final_score:.1f}%)")
                         continue
 
