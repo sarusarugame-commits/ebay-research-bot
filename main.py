@@ -25,6 +25,7 @@ from config import EBAY_APP_ID, GOOGLE_APPLICATION_CREDENTIALS
 import database
 from mercari_scraper import search_mercari, search_rakuma, scrape_item_data
 from surugaya_scraper import search_surugaya, scrape_surugaya_item
+from amazon_scraper import search_amazon, scrape_amazon_specs
 from llm_vision_judge import estimate_weight_with_llm, analyze_item_safety_and_tariff
 from clip_judge import judge_similarity
 # verify_with_lightglue は clip_judge 内で使われるようになったよ！
@@ -252,7 +253,7 @@ def main():
                     if detail:
                         item.update(detail) # img_urls 等を更新
                     
-                    # img_urls がない場合は一覧の img_url を使う
+                    # img_urls がない場合は一覧의 img_url を使う
                     current_img_urls = item.get("img_urls", [])
                     if not current_img_urls and item.get("img_url"):
                         current_img_urls = [item["img_url"]]
@@ -362,6 +363,33 @@ def main():
             from shopping_api import search_yahoo
             yahoo_items = search_yahoo(search_query)
             process_candidates(yahoo_items, "Yahooショッピング")
+
+            # --- Amazon Spec Extraction Phase ---
+            print(f"\n[*] Amazon.jp から詳細スペック（サイズ・重量）の取得を試行中...")
+            amazon_candidates = search_amazon(search_query, browser, max_results=5)
+            if amazon_candidates:
+                # 判定用画像は eBay のものを使用
+                amazon_judged = judge_similarity(img_url, amazon_candidates)
+                for a_item in amazon_judged:
+                    a_score = float(a_item.get('score', 0))
+                    if a_score >= 70:
+                        print(f"    [MATCH] Amazon商品特定成功 ({a_score:.1f}%): {a_item['title'][:30]}...")
+                        a_specs = scrape_amazon_specs(a_item['page_url'], browser)
+                        
+                        if a_specs["weight"] != "不明":
+                            print(f"    [AMAZON] 重量取得成功: {a_specs['weight']}")
+                            weight_final = a_specs["weight"]
+                        if a_specs["dimensions"] != "不明":
+                            print(f"    [AMAZON] 寸法取得成功: {a_specs['dimensions']}")
+                            dims_final = a_specs["dimensions"]
+                        
+                        # 両方取得できたら終了、片方だけなら次の候補も試す（ユーザー要望：全滅したら不明）
+                        if weight_final != "不明" and dims_final != "不明":
+                            break
+                    else:
+                        print(f"    [SKIP] Amazon候補一致率不足 ({a_score:.1f}%): {a_item['title'][:20]}...")
+            else:
+                print("    [!] Amazonで商品が見つかりませんでした。")
 
         if weight_final == "不明" and raw_w != "不明": weight_final = truncate_weight(raw_w)
         if dims_final == "不明" and raw_d != "不明": dims_final = adjust_dimensions(raw_d)
