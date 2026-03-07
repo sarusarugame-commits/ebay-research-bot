@@ -26,7 +26,7 @@ import database
 from mercari_scraper import search_mercari, search_rakuma, scrape_item_data
 from surugaya_scraper import search_surugaya, scrape_surugaya_item
 from amazon_scraper import search_amazon, scrape_amazon_specs
-from llm_vision_judge import estimate_weight_with_llm, analyze_item_safety_and_tariff
+from llm_vision_judge import estimate_weight_with_llm, analyze_item_safety_and_tariff, verify_specs_with_llm
 from clip_judge import judge_similarity
 # verify_with_lightglue は clip_judge 内で使われるようになったよ！
 from ebay_scraper import scrape_ebay_newest_items, scrape_ebay_item_specs, get_browser_page
@@ -44,20 +44,47 @@ def extract_specs_from_text(text):
 
 def adjust_dimensions(dims_str):
     if dims_str == "不明": return "不明"
+    # 梱包バッファ: 縦+20mm, 横+20mm, 高+10mm
+    # 一桁目は切り捨て
     nums = re.findall(r"(\d+(\.\d+)?)", dims_str)
     if len(nums) >= 3:
-        d1, d2, d3 = int(float(nums[0][0]) + 2), int(float(nums[1][0]) + 2), int(float(nums[2][0]) + 1)
+        d_vals = [float(nums[i][0]) for i in range(3)]
         unit = "mm" if "mm" in dims_str.lower() else "cm"
-        return f"{d1}x{d2}x{d3} {unit}"
+        
+        # 単位を統一して計算 (基本はcmで来ることを想定しつつ)
+        if unit == "cm":
+            # cm -> mm, add buffer, round down last digit, mm -> cm
+            d1 = (d_vals[0] * 10) + 20
+            d2 = (d_vals[1] * 10) + 20
+            d3 = (d_vals[2] * 10) + 10
+            d1, d2, d3 = [int(d // 10 * 10) for d in [d1, d2, d3]]
+            return f"{d1/10}x{d2/10}x{d3/10} cm"
+        else:
+            # mm
+            d1 = d_vals[0] + 20
+            d2 = d_vals[1] + 20
+            d3 = d_vals[2] + 10
+            d1, d2, d3 = [int(d // 10 * 10) for d in [d1, d2, d3]]
+            return f"{d1}x{d2}x{d3} mm"
     return dims_str
 
 def truncate_weight(weight_str):
     if weight_str == "不明": return "不明"
+    # 梱包バッファ: +100g
+    # 一桁目は切り捨て
     nums = re.findall(r"(\d+(\.\d+)?)", weight_str)
     if nums:
-        val = int(float(nums[0][0]))
+        val = float(nums[0][0])
         unit = "kg" if "kg" in weight_str.lower() or "キロ" in weight_str else "g"
-        return f"{val}{unit}"
+        
+        if unit == "kg":
+            gram_val = (val * 1000) + 100
+            gram_val = int(gram_val // 10 * 10)
+            return f"{gram_val/1000}kg"
+        else:
+            gram_val = val + 100
+            gram_val = int(gram_val // 10 * 10)
+            return f"{gram_val}g"
     return weight_str
 
 def save_debug_image(url, folder, filename):
@@ -101,9 +128,6 @@ def main():
             
         items.sort(key=lambda x: x.get('timestamp', datetime.datetime.min), reverse=False)
         target_item = items[0] if items else None
-        # for item in items:
-        #     if not database.is_researched(item.get('id')):
-        #         target_item = item; break
         
         if not target_item:
             print("\n[OK] 指定されたURL内の全商品はすでにリサーチ済みです。")
@@ -191,209 +215,123 @@ def main():
         tentative_best_price = float('inf')
 
         if final_name and final_name != "特定不能":
-            # 検索用クエリの作成 (ブランド + 型番) を優先
             brand_model = f"{name_data.get('brand', '')} {name_data.get('model', '')}".strip()
             search_query = brand_model if len(brand_model) > 5 else final_name
-            
-            # 共通のフィルタリング用キーワード
-            filter_text = f"{name_data.get('series', '')} {name_data.get('model', '')} {name_data.get('keywords', '')}".strip()
             import unicodedata
             def normalize_text(text):
                 return unicodedata.normalize('NFKC', text).lower()
-
+            filter_text = f"{name_data.get('series', '')} {name_data.get('model', '')} {name_data.get('keywords', '')}".strip()
             search_keywords = [normalize_text(k) for k in re.split(r'[\s　]+', filter_text) if len(k) > 1]
             model_name = normalize_text(name_data.get('model', ''))
 
             def process_candidates(candidates, platform):
                 nonlocal tentative_best_price, tentative_best_item, weight_final, dims_final
-                
-                if not candidates:
-                    print(f"[*] {platform}: 検索結果 0 件でした。")
-                    return
-
-                print(f"[*] {platform}: {len(candidates)} 件の候補を詳細判定中 (基準: 加重平均 70%以上)")
-                
-                # 1. キーワードフィルタリング
+                if not candidates: return
                 threshold = max(1, len(search_keywords) // 2)
                 keyword_filtered = []
                 for item in candidates:
                     title_norm = normalize_text(item.get("title", ""))
                     num_matches = sum(1 for k in search_keywords if k in title_norm)
                     has_model = model_name in title_norm if len(model_name) > 3 else False
-                    
                     if has_model or num_matches >= threshold:
                         keyword_filtered.append(item)
-                    else:
-                        print(f"    [SKIP] キーワード不足 ({num_matches}/{threshold}): {item.get('title')[:30]}...")
-                
-                if not keyword_filtered:
-                    print(f"    [!] キーワード条件に満たないため、全件を画像判定へ回します。")
-                    keyword_filtered = candidates
-
-                browser_page = get_browser_page() # 詳細スクレイピング用
-
+                if not keyword_filtered: keyword_filtered = candidates
+                browser_page = get_browser_page()
                 for item in keyword_filtered:
                     item_title = item.get('title', '不明')
                     page_url = item.get('page_url', '')
-                    
-                    if not page_url or not page_url.startswith("http"):
-                        print(f"    [SKIP] 無効なURL: {item_title[:20]} (URL: {page_url})")
-                        continue
-
-                    print(f"    [*] 候補精査: {item_title[:30]}")
-                    print(f"           URL: {page_url}")
-                    
-                    # 2. 詳細情報の取得 (画像5枚を取得するため)
+                    if not page_url or not page_url.startswith("http"): continue
                     detail = None
                     if platform in ["メルカリ", "ラクマ"]:
                         detail = scrape_item_data(page_url, browser_page)
                     elif platform == "駿河屋":
                         detail = scrape_surugaya_item(page_url, browser_page)
-                    
-                    if detail:
-                        item.update(detail) # img_urls 等を更新
-                    
-                    # img_urls がない場合は一覧の img_url を使う
-                    current_img_urls = item.get("img_urls", [])
-                    if not current_img_urls and item.get("img_url"):
-                        current_img_urls = [item["img_url"]]
-                    
-                    if not current_img_urls:
-                        print(f"    [SKIP] 画像が見つかりません: {item_title[:30]}")
-                        continue
-
-                    # 3. 画像判定 (DINOv2) - 最大5枚すべてチェック
-                    print(f"    [*] 画像判定中 ({len(current_img_urls)}枚): {item_title[:20]}...")
-                    
+                    if detail: item.update(detail)
+                    current_img_urls = item.get("img_urls", []) or ([item["img_url"]] if item.get("img_url") else [])
+                    if not current_img_urls: continue
                     img_candidates = [{"img_url": u} for u in current_img_urls]
                     judged_imgs = judge_similarity(img_url, img_candidates)
-                    
-                    if not judged_imgs:
-                        print(f"    [REJECT] 画像判定エラー")
-                        continue
-
-                    # ベストスコアのものを採用
+                    if not judged_imgs: continue
                     best_ji = judged_imgs[0]
                     final_score = float(best_ji.get("score", 0))
-                    
-                    # デバッグ画像の保存
-                    for i, ji in enumerate(judged_imgs[:3]):
-                        s = float(ji.get("score", 0))
-                        img_filename = f"{platform}_{item_title[:10]}_{i}_score_{s:.1f}.jpg".replace("/", "_").replace(" ", "_")
-                        save_debug_image(ji.get("img_url"), debug_folder, img_filename)
-
-                    if final_score < 70:
-                        print(f"    [REJECT] 最終加重スコア不足 ({final_score:.1f}%)")
-                        continue
-
-                    print(f"    [MATCH] 検証合格 ({final_score:.1f}%) URL: {page_url}")
-
-                    # 5. 送料計算と最安値更新
+                    if final_score < 70: continue
                     detail_price_str = str(item.get('price', '0'))
                     p_str = re.sub(r'[^\d]', '', detail_price_str)
                     price_val = int(p_str) if p_str else 0
-                    
-                    if price_val <= 0:
-                        print(f"    [SKIP] 不正な価格 (¥{price_val}): {item_title[:20]}")
-                        continue
-
+                    if price_val <= 0: continue
                     item["price_int"] = price_val
                     ship_fee = item.get("actual_shipping_fee", 0)
                     total_price = item["price_int"] + ship_fee
                     item["total_price"] = total_price
-                    
-                    print(f"       -> 価格(送料込): ¥{total_price:,} (本体:¥{item['price_int']:,} + 送料:¥{ship_fee:,}) / 状態: {item.get('condition', '不明')}")
-
                     if total_price < tentative_best_price:
-                        total_price = total_price # skip check
                         tentative_best_price = total_price
                         tentative_best_item = item
-                        print(f"       >>> 暫定最安値を更新しました！ (¥{total_price:,})")
-
                     if weight_final == "不明" or dims_final == "不明":
                         desc_text = item.get("description", "") + " " + item.get("title", "")
                         ext_w, ext_d = extract_specs_from_text(desc_text)
                         if weight_final == "不明" and ext_w != "不明": weight_final = ext_w
                         if dims_final == "不明" and ext_d != "不明": dims_final = ext_d
-                    
                     final_candidates.append(item)
 
             def get_fresh_browser():
                 nonlocal browser
                 try:
-                    # 司令官流！ latest_tab に触れるかどうかで生存確認するよ！
-                    if not browser:
-                        print("    [*] ブラウザを新規起動します...")
-                        browser = get_browser_page()
-                    else:
-                        print("    [*] ブラウザの生存確認中...", end=" ", flush=True)
-                        _ = browser.latest_tab  # これでエラーが出なければブラウザは元気！
-                        print("OK")
-                except Exception:
-                    print("[!] ブラウザの状態異常を検知したため、再起動します...")
-                    browser = get_browser_page()
+                    if not browser: browser = get_browser_page()
+                    else: _ = browser.latest_tab
+                except Exception: browser = get_browser_page()
                 return browser
 
-            print(f"\n[*] 国内5大プラットフォームを順次調査開始...")
-            
-            def log_search(platform):
-                print(f"    [🔍] {platform} を検索中...")
-
-            # メルカリ
             browser = get_fresh_browser()
-            log_search("メルカリ")
             m_res = search_mercari(search_query, browser, max_results=15)
             process_candidates(m_res, "メルカリ")
-
-            # ラクマ
             browser = get_fresh_browser()
-            log_search("ラクマ")
             r_res = search_rakuma(search_query, browser, max_results=10)
             process_candidates(r_res, "ラクマ")
-
-            # 駿河屋
             browser = get_fresh_browser()
-            log_search("駿河屋")
             s_res = search_surugaya(search_query, browser, max_results=10)
             process_candidates(s_res, "駿河屋")
-
             from shopping_api import search_rakuten
-            rakuten_items = search_rakuten(search_query)
-            process_candidates(rakuten_items, "楽天市場")
-
+            process_candidates(search_rakuten(search_query), "楽天市場")
             from shopping_api import search_yahoo
-            yahoo_items = search_yahoo(search_query)
-            process_candidates(yahoo_items, "Yahooショッピング")
+            process_candidates(search_yahoo(search_query), "Yahooショッピング")
 
             # --- Amazon Spec Extraction Phase ---
             print(f"\n[*] Amazon.jp から詳細スペック（サイズ・重量）の取得を試行中...")
             amazon_candidates = search_amazon(search_query, browser, max_results=5)
             if amazon_candidates:
-                # 判定用画像は eBay のものを使用
                 amazon_judged = judge_similarity(img_url, amazon_candidates)
                 for a_item in amazon_judged:
                     a_score = float(a_item.get('score', 0))
                     if a_score >= 70:
-                        print(f"    [MATCH] Amazon商品特定成功 ({a_score:.1f}%): {a_item['title'][:30]}...")
                         a_specs = scrape_amazon_specs(a_item['page_url'], browser)
-                        
                         if a_specs["weight"] != "不明":
-                            print(f"    [AMAZON] 重量取得成功: {a_specs['weight']}")
                             weight_final = a_specs["weight"]
                         if a_specs["dimensions"] != "不明":
-                            print(f"    [AMAZON] 寸法取得成功: {a_specs['dimensions']}")
                             dims_final = a_specs["dimensions"]
-                        
-                        # 両方取得できたら終了、片方だけなら次の候補も試す（ユーザー要望：全滅したら不明）
-                        if weight_final != "不明" and dims_final != "不明":
-                            break
-                    else:
-                        print(f"    [SKIP] Amazon候補一致率不足 ({a_score:.1f}%): {a_item['title'][:20]}...")
+                        if weight_final != "不明" and dims_final != "不明": break
             else:
                 print("    [!] Amazonで商品が見つかりませんでした。スペックは現状のまま（不明）維持します。")
 
-        if weight_final == "不明" and raw_w != "不明": weight_final = truncate_weight(raw_w)
-        if dims_final == "不明" and raw_d != "不明": dims_final = adjust_dimensions(raw_d)
+        if weight_final == "不明" and raw_w != "不明": weight_final = raw_w
+        if dims_final == "不明" and raw_d != "不明": dims_final = raw_d
+        
+        # 数値の調整（バッファ加算と切り捨て）
+        weight_final = truncate_weight(weight_final)
+        dims_final = adjust_dimensions(dims_final)
+
+        # --- Final Spec Verification Phase (LLM) ---
+        print("\n[*] Gemma 3 が画像から最終的なスペック（梱包込）を検証・調整中...")
+        is_weight_unknown = (weight_final == "不明")
+        is_dims_unknown = (dims_final == "不明")
+        
+        weight_v, dims_v = verify_specs_with_llm(img_url, weight_final, dims_final)
+        
+        # 不明フラグの処理
+        if is_weight_unknown: weight_v += " (不明)"
+        if is_dims_unknown: dims_v += " (不明)"
+        
+        weight_final = weight_v
+        dims_final = dims_v
 
         best_item = tentative_best_item
         if best_item:
@@ -416,28 +354,17 @@ def main():
         print(f"■ eBay商品 ID  : {item_id}")
         print(f"■ 判定した商品名: {final_name}")
         print("-" * 60)
-        
         if best_item:
             print(f"【！国内最安値確定商品！】")
             print(f"■ プラットフォーム: {best_item.get('platform')}")
-            print(f"■ 商品タイトル    : {best_item.get('title')}")
             print(f"■ 送料込み価格    : ¥{best_item.get('total_price', 0):,}")
             print(f"■ 商品URL         : {best_item.get('page_url')}")
-            print(f"■ 加重平均スコア  : {best_item.get('score', 0):.1f}%")
-            print(f"■ 商品の状態      : {best_item.get('condition')}")
         else:
-            print(" domestic lowest price NOT found (類似の商品が見つかりませんでした)。")
-        
-        if high_tariff_flag:
-            print(f"\n【⚠️ 重要：高関税注意】")
-            print(f"この商品は AI により「{material_label}」素材である可能性が高いと判定されました。")
-            print(f"鉄・鋼鉄製品や本革製品は関税が高くなる可能性があるため、仕入れ前に再確認してください。")
-            
+            print(" domestic lowest price NOT found.")
         print("-" * 60)
         print(f"■ 推定重量        : {weight_final}")
         print(f"■ 推定サイズ      : {dims_final}")
         print("="*60)
-        print("[*] データベースへの記録が完了しました。\n")
 
     except Exception as e:
         print(f"\n[！重大なエラーが発生しました！]")
