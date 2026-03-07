@@ -1,26 +1,37 @@
-# Byte-compiled / optimized / DLL files
+# User requested exclusions
+.env
+*.json
+
+# Python
 __pycache__/
-*.py[cod]
-*$py.class
-
-# OS generated files
-.DS_Store
-Thumbs.db
-
-# Virtual Environment
+*.pyc
+*.pyo
+*.pyd
 .venv/
 venv/
 env/
-ENV/
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Sensitive files
-.env
-.env.example
-*.json
-!package.json
-
-# Local artifacts
-debug_images/
-downloads/
-*.log
+# Local Database
 *.db
+!sample.db
+
+# Debug & Temporary Outputs
+debug_images/
+dll_list.txt
+*.log
+
+# Editor & OS
+.vscode/
+.idea/
+*.code-workspace
+.DS_Store
+Thumbs.db
+
+# Large binaries/DLLs (if any are accidentally copied)
+*.dll
+*.so
+*.dylib
+*.exe

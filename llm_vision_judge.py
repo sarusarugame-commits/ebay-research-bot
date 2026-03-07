@@ -145,6 +145,7 @@ def judge_similarity_with_llm(ebay_img_url, scraped_items):
             results.append(item)
             continue
             
+        # Gemma 3 (Google AI Studio) は system ロールをサポートしていない場合があるため、user に統合する
         combined_prompt = (
             "あなたはプロの真贋鑑定士・ECリサーチャーです。以下の指示に従って2つの画像を比較してください。\n\n"
             "【指示】\n"
@@ -207,57 +208,3 @@ def judge_similarity_with_llm(ebay_img_url, scraped_items):
     # スコアの降順でソート
     results.sort(key=lambda x: x.get("score", 0), reverse=True)
     return results
-
-def verify_specs_with_llm(ebay_img_url, current_weight, current_dims):
-    """
-    Gemma 3 (Vision) を用いて、最終的なサイズと重量が画像から見て妥当か判定・調整する。
-    """
-    if not OPENROUTER_API_KEY:
-        return current_weight, current_dims
-        
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    prompt = (
-        "あなたはプロの物流・梱包エキスパートです。添付された商品の画像と、現在算出されているサイズ・重量情報を確認してください。\n\n"
-        f"【現在のデータ】\n"
-        f"- 重量: {current_weight}\n"
-        f"- サイズ: {current_dims}\n\n"
-        "【指示】\n"
-        "1. 「海外輸送（国際郵便・クーリエ）」に耐えうる頑丈な梱包（箱、緩衝材）を含めた場合、画像から判断して上記の数値が妥当か判定してください。\n"
-        "2. もし数値が「不明」であったり、明らかに足りない、または不自然な場合は、画像から推測して適切な値に調整してください。\n"
-        "3. 数値が妥当な場合は、そのままの値を返してください。\n\n"
-        "【出力形式】\n"
-        "以下のJSON形式でのみ出力してください（文章は一切不要です）。\n"
-        "{\"weight\": \"〇〇kgまたは〇〇g\", \"dimensions\": \"縦x横x高 単位\"}"
-    )
-
-    payload = {
-        "model": "google/gemma-3-27b-it:free",
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": ebay_img_url}}
-                ]
-            }
-        ],
-        "temperature": 0.0,
-        "response_format": {"type": "json_object"}
-    }
-
-    try:
-        print(f"[*] Gemma 3 が画像から最終的なスペック（梱包込）を検証・調整中...")
-        response = requests.post(url, headers=headers, json=payload, timeout=20)
-        if response.status_code == 200:
-            content = response.json()["choices"][0]["message"]["content"].strip()
-            data = json.loads(content)
-            return data.get("weight", current_weight), data.get("dimensions", current_dims)
-    except Exception as e:
-        print(f"     [!] スペック検証失敗: {e}")
-    
-    return current_weight, current_dims

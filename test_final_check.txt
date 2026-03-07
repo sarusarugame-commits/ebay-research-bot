@@ -1,0 +1,129 @@
+﻿python : Using cache found 
+in C:\Users\TAKUMA/.cache\t
+orch\hub\facebookresearch_d
+inov2_main
+逋ｺ逕溷ｴ謇 陦・1 譁・ｭ・1
++ python validate_ebay_sear
+ch_v3.py > test_log_final.t
+xt 2>&1; python - ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~
+    + CategoryInfo         
+     : NotSpecified: (Usi  
+  ng cache fou...rch_din   
+ ov2_main:String) [], R    
+emoteException
+    + FullyQualifiedErrorI 
+   d : NativeCommandError
+ 
+C:\Users\TAKUMA/.cache\torc
+h\hub\facebookresearch_dino
+v2_main\dinov2\layers\swigl
+u_ffn.py:51: UserWarning: x
+Formers is not available (S
+wiGLU)
+  warnings.warn("xFormers i
+s not available (SwiGLU)")
+C:\Users\TAKUMA/.cache\torc
+h\hub\facebookresearch_dino
+v2_main\dinov2\layers\atten
+tion.py:33: UserWarning: xF
+ormers is not available (At
+tention)
+  warnings.warn("xFormers i
+s not available (Attention)
+")
+C:\Users\TAKUMA/.cache\torc
+h\hub\facebookresearch_dino
+v2_main\dinov2\layers\block
+.py:40: UserWarning: xForme
+rs is not available (Block)
+  warnings.warn("xFormers i
+s not available (Block)")
+[*] GPU霑ｺ・ｰ陟・・・定ｭ崢鬩包ｽｩ陋ｹ謔ｶ・邵ｺ・ｦ邵ｺ繝ｻ竏ｪ邵ｺ繝ｻ..
+  [+] DLL郢昜ｻ｣縺幃恆・ｽ陷会｣ｰ: C:\Users\TAKUMA\AppData\Local\Programs\Python\Python312\Lib\site-packages\nvidia\cublas\bin (3 files)
+  [+] DLL郢昜ｻ｣縺幃恆・ｽ陷会｣ｰ: C:\Users\TAKUMA\AppData\Local\Programs\Python\Python312\Lib\site-packages\nvidia\cuda_runtime\bin (3 files)
+  [+] DLL郢昜ｻ｣縺幃恆・ｽ陷会｣ｰ: C:\Users\TAKUMA\AppData\Local\Programs\Python\Python312\Lib\site-packages\nvidia\cudnn\bin (8 files)
+  [+] DLL郢昜ｻ｣縺幃恆・ｽ陷会｣ｰ: C:\Users\TAKUMA\AppData\Local\Programs\Python\Python312\Lib\site-packages\nvidia\cufft\bin (4 files)
+  [+] DLL郢昜ｻ｣縺幃恆・ｽ陷会｣ｰ: C:\Users\TAKUMA\AppData\Local\Programs\Python\Python312\Lib\site-packages\nvidia\curand\bin (1 files)
+  [+] DLL郢昜ｻ｣縺幃恆・ｽ陷会｣ｰ: C:\Users\TAKUMA\AppData\Local\Programs\Python\Python312\Lib\site-packages\nvidia\cusolver\bin (2 files)
+  [+] DLL郢昜ｻ｣縺幃恆・ｽ陷会｣ｰ: C:\Users\TAKUMA\AppData\Local\Programs\Python\Python312\Lib\site-packages\nvidia\cusparse\bin (2 files)
+  [+] DLL郢昜ｻ｣縺幃恆・ｽ陷会｣ｰ: C:\Users\TAKUMA\AppData\Local\Programs\Python\Python312\Lib\site-packages\nvidia\nvjitlink\bin (1 files)
+  [+] DLL郢昜ｻ｣縺幃恆・ｽ陷会｣ｰ: C:\Users\TAKUMA\AppData\Local\Programs\Python\Python312\Lib\site-packages\onnxruntime\capi (31 files)
+[*] CUDA郢晢ｽｩ郢ｧ・､郢晄じﾎ帷ｹ晢ｽｪ (cublasLt64_12) 邵ｺ・ｮ髫ｱ・ｭ邵ｺ・ｿ髴趣ｽｼ邵ｺ・ｿ邵ｺ・ｫ隰御ｻ咏ｲ･邵ｺ蜉ｱ竏ｪ邵ｺ蜉ｱ笳・ｸｲ繝ｻ
+[*] DINOv2郢晢ｽ｢郢昴・ﾎ・(dinov2_vits14) 郢ｧ蛛ｵﾎ溽ｹ晢ｽｼ郢晏ｳｨ・邵ｺ・ｦ邵ｺ繝ｻ竏ｪ邵ｺ繝ｻ..
+[*] DINOv2郢晢ｽ｢郢昴・ﾎ晉ｹ晢ｽｭ郢晢ｽｼ郢晉甥・ｮ蠕｡・ｺ繝ｻ(Device: cuda)
+[*] eBay EBAY_US 隶諛・ｽｴ・｢闕ｳ・ｭ... (NEW)
+    [DEBUG] URL: https://api.ebay.com/buy/browse/v1/item_summary/search?q=CASIO+Oceanus+OCW-S6000&limit=60&filter=conditions%3A%7BNEW%7D
+    [DEBUG] Response Code: 200
+    [*] EBAY_US: 22 闔会ｽｶ邵ｺ・ｮ陜繝ｻ蛻郢ｧ蜻茨ｽ､諛・ｽｴ・｢闕ｳﾂ髫包ｽｧ邵ｺ荵晢ｽ芽愾髢・ｾ蜉ｱﾂ繝ｻ
+    [*] EBAY_US: 22 闔会ｽｶ邵ｺ・ｮ陋溷揃・｣諛奇ｽ帝包ｽｻ陷剃ｸ樊・陞ｳ螢ｻ・ｸ・ｭ...
+    [*] 22 闔会ｽｶ邵ｺ・ｮ陋溷揃・｣諛奇ｽ帝ｊ・ｾ陝・・諢幄楜螢ｻ・ｸ・ｭ (MAX 5 imgs/item, Color Gate: 50)...
+    [REJECT] Candidate 0: No images passed color gate or load failed.
+    [REJECT] Candidate 1: No images passed color gate or load failed.
+    [REJECT] Candidate 2: No images passed color gate or load failed.
+    [REJECT] Candidate 3: No images passed color gate or load failed.
+    [REJECT] Candidate 4: No images passed color gate or load failed.
+    [REJECT] Candidate 5: No images passed color gate or load failed.
+    [PASS] Candidate 6: Best Score=98.5% (Color=63.4)
+    [REJECT] Candidate 7: No images passed color gate or load failed.
+    [REJECT] Candidate 8: No images passed color gate or load failed.
+    [REJECT] Candidate 9: No images passed color gate or load failed.
+    [REJECT] Candidate 10: No images passed color gate or load failed.
+    [REJECT] Candidate 11: No images passed color gate or load failed.
+    [REJECT] Candidate 12: No images passed color gate or load failed.
+    [REJECT] Candidate 13: No images passed color gate or load failed.
+    [REJECT] Candidate 14: No images passed color gate or load failed.
+    [REJECT] Candidate 15: No images passed color gate or load failed.
+    [REJECT] Candidate 16: No images passed color gate or load failed.
+    [REJECT] Candidate 17: No images passed color gate or load failed.
+    [REJECT] Candidate 18: No images passed color gate or load failed.
+    [REJECT] Candidate 19: No images passed color gate or load failed.
+    [REJECT] Candidate 20: No images passed color gate or load failed.
+    [REJECT] Candidate 21: No images passed color gate or load failed.
+    [*] EBAY_US: 闕ｳ雍具ｽｽ繝ｻ1 闔会ｽｶ邵ｺ・ｮ髫ｧ・ｳ驍擾ｽｰ隲繝ｻ・ｰ・ｱ郢ｧ雋槫徐陟募干・邵ｺ・ｦ鬨ｾ竏ｵ萓ｭ郢ｧ蝣､・｢・ｺ陞ｳ螢ｻ・ｸ・ｭ...
+      [DEBUG] Detail Fetching for v1|406730980480|0...
+        [+] Summary Fallback: 0.0 USD
+[*] eBay EBAY_GB 隶諛・ｽｴ・｢闕ｳ・ｭ... (NEW)
+    [DEBUG] URL: https://api.ebay.com/buy/browse/v1/item_summary/search?q=CASIO+Oceanus+OCW-S6000&limit=60&filter=conditions%3A%7BNEW%7D
+    [DEBUG] Response Code: 200
+    [*] EBAY_GB: 16 闔会ｽｶ邵ｺ・ｮ陜繝ｻ蛻郢ｧ蜻茨ｽ､諛・ｽｴ・｢闕ｳﾂ髫包ｽｧ邵ｺ荵晢ｽ芽愾髢・ｾ蜉ｱﾂ繝ｻ
+    [*] EBAY_GB: 16 闔会ｽｶ邵ｺ・ｮ陋溷揃・｣諛奇ｽ帝包ｽｻ陷剃ｸ樊・陞ｳ螢ｻ・ｸ・ｭ...
+    [*] 16 闔会ｽｶ邵ｺ・ｮ陋溷揃・｣諛奇ｽ帝ｊ・ｾ陝・・諢幄楜螢ｻ・ｸ・ｭ (MAX 5 imgs/item, Color Gate: 50)...
+    [REJECT] Candidate 0: No images passed color gate or load failed.
+    [REJECT] Candidate 1: No images passed color gate or load failed.
+    [REJECT] Candidate 2: No images passed color gate or load failed.
+    [REJECT] Candidate 3: No images passed color gate or load failed.
+    [PASS] Candidate 4: Best Score=98.4% (Color=63.8)
+    [REJECT] Candidate 5: No images passed color gate or load failed.
+    [REJECT] Candidate 6: No images passed color gate or load failed.
+    [REJECT] Candidate 7: No images passed color gate or load failed.
+    [REJECT] Candidate 8: No images passed color gate or load failed.
+    [REJECT] Candidate 9: No images passed color gate or load failed.
+    [REJECT] Candidate 10: No images passed color gate or load failed.
+    [REJECT] Candidate 11: No images passed color gate or load failed.
+    [REJECT] Candidate 12: No images passed color gate or load failed.
+    [REJECT] Candidate 13: No images passed color gate or load failed.
+    [REJECT] Candidate 14: No images passed color gate or load failed.
+    [REJECT] Candidate 15: No images passed color gate or load failed.
+    [*] EBAY_GB: 闕ｳ雍具ｽｽ繝ｻ1 闔会ｽｶ邵ｺ・ｮ髫ｧ・ｳ驍擾ｽｰ隲繝ｻ・ｰ・ｱ郢ｧ雋槫徐陟募干・邵ｺ・ｦ鬨ｾ竏ｵ萓ｭ郢ｧ蝣､・｢・ｺ陞ｳ螢ｻ・ｸ・ｭ...
+      [DEBUG] Detail Fetching for v1|406731473510|0...
+        [+] Detail: 0.0 GBP (Type: FIXED)
+
+======================================================================
+   eBay Global Highest & Best Results (Top 3 Each)
+======================================================================
+
+[Market: eBay US]
+  Rank 1: CASIO Oceanus OCW-S6000PBS-7AJR White Case Size 40mm Titaniu...
+    - 陷ｷ驛・ｽｨ莠包ｽｾ・｡隴ｬ・ｼ: $5,200.00 USD (隴幢ｽｬ闖ｴ繝ｻ5200.0 USD + 鬨ｾ竏ｵ萓ｭ:0.0)
+    - 鬩包ｽｩ陷ｷ閧ｲ邏ｫ:   98.5%
+    - URL:      https://www.ebay.com/itm/406730980480?_skw=CASIO+Oceanus+OCW-S6000&hash=item5eb30e3c80:g:FGcAAeSwD8NppOYW
+
+[Market: eBay UK]
+  Rank 1: CASIO Oceanus OCW-S6000PBS-7AJR White Case Size 40mm Titaniu...
+    - 陷ｷ驛・ｽｨ莠包ｽｾ・｡隴ｬ・ｼ: $4,990.45 USD (隴幢ｽｬ闖ｴ繝ｻ3992.36 GBP + 鬨ｾ竏ｵ萓ｭ:0.0)
+    - 鬩包ｽｩ陷ｷ閧ｲ邏ｫ:   98.4%
+    - URL:      https://www.ebay.co.uk/itm/406731473510?_skw=CASIO+Oceanus+OCW-S6000&hash=item5eb315c266:g:BZwAAeSwcg5ppSvq
+======================================================================

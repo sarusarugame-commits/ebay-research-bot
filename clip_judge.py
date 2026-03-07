@@ -7,7 +7,6 @@ from io import BytesIO
 import cv2
 import numpy as np
 from rembg import remove, new_session
-import os
 
 # DINOv2モデルのロード
 print("[*] DINOv2モデル (dinov2_vits14) をロードしています...")
@@ -33,6 +32,8 @@ print(f"[*] DINOv2モデルロード完了 (Device: {device})")
 # 🏎️💨 GPU優先モード
 bg_session = new_session("u2net", providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
 
+# from lightglue_judge import verify_with_lightglue, calculate_lightglue_score
+
 # DINOv2用の前処理
 transform = T.Compose([
     T.Resize(224),
@@ -41,16 +42,13 @@ transform = T.Compose([
     T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
 
-def load_and_remove_bg(url_or_path, max_size=400):
-    """画像（URLまたはローカルパス）をロードし、リサイズ＆背景除去して RGBA画像 を返す"""
+def load_and_remove_bg(url, max_size=400):
+    """画像をダウンロードし、リサイズ＆背景除去して RGBA画像 を返す"""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     try:
-        if os.path.exists(url_or_path):
-            img = Image.open(url_or_path).convert("RGB")
-        else:
-            response = requests.get(url_or_path, headers=headers, stream=True, timeout=10)
-            response.raise_for_status()
-            img = Image.open(BytesIO(response.content)).convert("RGB")
+        response = requests.get(url, headers=headers, stream=True, timeout=10)
+        response.raise_for_status()
+        img = Image.open(BytesIO(response.content)).convert("RGB")
         
         # 背景を抜く前に画像を小さくする
         img.thumbnail((max_size, max_size))
@@ -58,7 +56,7 @@ def load_and_remove_bg(url_or_path, max_size=400):
         img_rgba = remove(img, session=bg_session)
         return img_rgba
     except Exception as e:
-        print(f"    [!] 画像ロード/背景除去エラー ({str(url_or_path)[:50]}...): {e}")
+        print(f"    [!] 画像ロード/背景除去エラー ({url[:50]}...): {e}")
         return None
 
 def rgba_to_rgb_white_bg(rgba_img):
@@ -118,7 +116,7 @@ def judge_similarity(ebay_img_url, scraped_items):
     """
     【究極完全版】
     1. OpenCV色スコアで足切り (Color < 50 は即不採用)
-    2. DINOv2 (形状) で全件精密判定
+    2. DINOv2 (形状) で全件精密判定 (LightGlueは一時停止中)
     """
     try:
         ebay_rgba = load_and_remove_bg(ebay_img_url)
@@ -163,6 +161,11 @@ def judge_similarity(ebay_img_url, scraped_items):
             sim = torch.nn.functional.cosine_similarity(ebay_emb, cand_emb).item()
             dino_score = max(0, min(100, (sim - 0.5) * 200)) 
             
+            # 2. LightGlue (精密判定) - 一旦コメントアウト
+            # lg_count, lg_avg_conf = verify_with_lightglue(ebay_img_url, target_url)
+            # lg_score = calculate_lightglue_score(lg_avg_conf)
+            
+            # 最終スコアブレンド: DINO 100%
             final_score = dino_score
             
             print(f"    [PASS] Candidate {i}: Color={color_score:.1f} | DINO={dino_score:.1f} => Final={final_score:.1f}%")
@@ -170,6 +173,7 @@ def judge_similarity(ebay_img_url, scraped_items):
             item["score"] = final_score
             item["color_score"] = color_score
             item["dino_score"] = dino_score
+            # item["lg_score"] = lg_score
             results.append(item)
             
         except Exception as e:
@@ -179,3 +183,4 @@ def judge_similarity(ebay_img_url, scraped_items):
             
     results.sort(key=lambda x: x.get("score", 0), reverse=True)
     return results
+
