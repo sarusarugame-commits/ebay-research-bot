@@ -17,6 +17,7 @@ htmlcov/
 # Local Database
 *.db
 !sample.db
+リサーチシート完全版 のコピー.xlsx
 
 # Debug & Temporary Outputs
 debug_images/
