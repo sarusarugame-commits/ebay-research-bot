@@ -366,19 +366,19 @@ def main():
             # メルカリ
             browser = get_fresh_browser()
             log_search("メルカリ")
-            m_res = search_mercari(search_query, browser, max_results=5)
+            m_res = search_mercari(search_query, browser, max_results=15)
             process_candidates(m_res, "メルカリ")
 
             # ラクマ
             browser = get_fresh_browser()
             log_search("ラクマ")
-            r_res = search_rakuma(search_query, browser, max_results=5)
+            r_res = search_rakuma(search_query, browser, max_results=10)
             process_candidates(r_res, "ラクマ")
 
             # 駿河屋
             browser = get_fresh_browser()
             log_search("駿河屋")
-            s_res = search_surugaya(search_query, browser, max_results=5)
+            s_res = search_surugaya(search_query, browser, max_results=10)
             process_candidates(s_res, "駿河屋")
 
             from shopping_api import search_rakuten
