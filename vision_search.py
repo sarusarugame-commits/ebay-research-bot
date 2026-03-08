@@ -127,3 +127,44 @@ def find_similar_images_on_web(image_uri, browser, max_results=15, force_lens=Fa
 
     # 2. API 0件またはエラーなら Google Lens を実行
     return search_by_google_lens(image_uri, browser)
+
+def search_global_images_by_lens(image_url, browser):
+    """英語商品名特定用: Google Lensで海外(英語)の類似画像を検索する"""
+    print(f"[*] Google Lens (Global版) で海外の類似画像を検索中...", flush=True)
+    results = []
+    try:
+        # hl=en を指定して英語圏の結果を優先！
+        tab = browser.new_tab(f"https://www.google.com/searchbyimage?image_url={image_url}&client=app&hl=en")
+        tab.wait.load_start()
+        tab.wait(3) 
+        tab.scroll.to_bottom() 
+        time.sleep(2)
+        
+        # 弾きたい日本のドメイン
+        jp_domains = ["mercari.com/jp", "rakuten.co.jp", "yahoo.co.jp", "fril.jp", "amazon.co.jp"]
+        items = tab.eles('css:a.LBcIee')
+        
+        for item in items:
+            href = item.attr('href')
+            if not href: continue
+            
+            # 日本のドメインを弾く (純粋な海外のeBayやフォーラムなどを狙う)
+            if any(domain in href for domain in jp_domains):
+                continue
+                
+            title_ele = item.ele('css:div[role="heading"]', timeout=1)
+            text = title_ele.text.strip() if title_ele else item.text.strip()
+            
+            img_ele = item.ele('tag:img', timeout=1)
+            img_url_cand = img_ele.attr('src') if img_ele else ""
+            
+            # 画像URLがあるものだけを抽出 (DINOv2判定に必須のため)
+            if len(text) > 5 and img_url_cand:
+                results.append({"page_url": href, "title": text, "snippet": "", "img_url": img_url_cand})
+                
+            if len(results) >= 30: break
+        tab.close()
+        print(f" -> Global版Lensで {len(results)} 件の海外候補を抽出しました。", flush=True)
+    except Exception as e:
+        print(f"[!] Global版Lens 失敗: {e}", flush=True)
+    return results

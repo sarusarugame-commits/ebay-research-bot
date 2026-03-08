@@ -191,45 +191,34 @@ def main():
         print(f" -> 最終確定した日本語名: {final_name}")
 
         # ==========================================
-        # 【新規】英語商品名を特定する独立プロセス！
+        # 【新規】英語商品名を特定する独立プロセス！ (Vision API版)
         # ==========================================
-        print("\n[*] eBay検索用の英語商品名（正確な型番）を特定中...")
-        from validate_ebay_search_v3 import search_ebay_market, get_ebay_token
+        print("\n[*] VisionAPI(Google Lens)経由で英語商品名（正確な型番）を特定中...")
+        from vision_search import search_global_images_by_lens
         from llm_namer import extract_english_product_name
         
-        token = get_ebay_token()
-        final_en_name = target_item.get('title') # 初期値をセット
+        final_en_name = target_item.get('title') # 初期値
         
-        if token:
-            print("    [*] 元のタイトルでeBay USをプレ検索し、海外の候補画像を収集します...")
-            raw_items = search_ebay_market(token, target_item.get('title'), "EBAY_US", "NEW")
+        # 1. VisionAPI (Google Lens) で海外の画像候補を取得
+        en_candidates = search_global_images_by_lens(img_url, browser)
+        
+        if en_candidates:
+            # 司令官の指示通り、Color 50を無条件除外とする！
+            print(f"    [*] {len(en_candidates)} 件の海外候補を画像判定中 (Color >= 50, DINOv2 >= 70)...")
+            judged_en = judge_similarity(img_url, en_candidates, color_gate=50)
             
-            en_candidates = []
-            for itm in raw_items:
-                img_url_cand = itm.get("image", {}).get("imageUrl")
-                if img_url_cand:
-                    en_candidates.append({"title": itm.get("title"), "img_url": img_url_cand})
+            # 2. DINOv2で70%以上の上位5件に絞る
+            top_en_matches = [m for m in judged_en if float(m.get("score", 0)) >= 70][:5]
             
-            if en_candidates:
-                en_candidates = en_candidates[:30] # 速度優先で上位30件に絞る
-                
-                print(f"    [*] {len(en_candidates)} 件の海外候補を画像判定中 (Color >= 50, DINOv2 >= 70)...")
-                # img_url は eBay オリジナルの画像URL
-                judged_en = judge_similarity(img_url, en_candidates)
-                
-                # スコア70以上のものを上位5件まで抽出
-                top_en_matches = [m for m in judged_en if float(m.get("score", 0)) >= 70][:5]
-                
-                if top_en_matches:
-                    print(f"    [*] 画像が一致した {len(top_en_matches)} 件のタイトルから英語名を抽出中...")
-                    en_name_data = extract_english_product_name(target_item.get('title'), top_en_matches)
-                    final_en_name = en_name_data.get("full_name", target_item.get('title'))
-                else:
-                    print("    [!] スコア70%以上の海外候補が見つかりませんでした。元のタイトルを使用します。")
+            if top_en_matches:
+                print(f"    [*] 画像が一致した {len(top_en_matches)} 件のタイトルから英語名を抽出中...")
+                # 3. 5商品の頻出単語カウント → LLMで決定 (前回修正したllm_namerのロジックを使用)
+                en_name_data = extract_english_product_name(target_item.get('title'), top_en_matches)
+                final_en_name = en_name_data.get("full_name", target_item.get('title'))
             else:
-                print("    [!] 画像付きの海外候補が取得できませんでした。")
+                print("    [!] スコア70%以上の海外候補が見つかりませんでした。元のタイトルを使用します。")
         else:
-            print("    [!] Token取得エラー。元のタイトルを使用します。")
+            print("    [!] 画像付きの海外候補が取得できませんでした。元のタイトルを使用します。")
             
         print(f" -> 最終確定した英語名: {final_en_name}")
         # ==========================================
