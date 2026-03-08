@@ -417,28 +417,8 @@ def main():
                 dimensions=dims_final
             )
             
-            print("\n[*] 国内最安値が判明したため、eBayでの競合最安値とUS/UK配送料をチェックします...")
-            # Browse API を使用して正確な送料と配送可否を取得 (US/UK)
-            print(f"[*] eBay API で詳細情報を取得中 (US/UK配送コンテキスト)...")
-            details_us = get_item_details(item_id, marketplace_id='EBAY_US', country='US', zip_code='10001')
-            details_uk = get_item_details(item_id, marketplace_id='EBAY_GB', country='GB', zip_code='E1 6AN')
             
-            if details_uk and not details_uk.get("is_shippable"):
-                print(f"    [⚠️ SKIP] この商品はイギリス (UK) へ配送不可と判定されました。")
-                # 配送不可の場合は上書き保存
-                database.mark_as_researched(
-                    item_id, 
-                    platform=best_item.get("platform"), 
-                    title=best_item.get("title"), 
-                    price=best_item.get("total_price"), 
-                    condition=best_item.get("condition"), 
-                    url=best_item.get("page_url"), 
-                    weight="SKIPPED", 
-                    dimensions="NOT_SHIPPABLE_TO_UK"
-                )
-
-            shipping_cost_us = details_us.get("shipping_cost", 0.0) if details_us else 0.0
-            print(f"    -> US送料: ${shipping_cost_us:.2f}")
+            print("\n[*] 国内最安値が判明したため、eBay全体での競合最安値（US/UK）をチェックします...")
 
             print("\n[*] 国内最安値が判明したため、eBay全体での競合最安値（US/UK）をチェックします...")
             from validate_ebay_search_v3 import process_market, get_ebay_token
