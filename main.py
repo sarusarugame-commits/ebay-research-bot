@@ -32,7 +32,7 @@ from clip_judge import judge_similarity
 from ebay_scraper import scrape_ebay_newest_items, scrape_ebay_item_specs, get_browser_page
 from vision_search import find_similar_images_on_web
 from llm_namer import extract_product_name
-from amazon_scraper import search_amazon, scrape_amazon_specs
+from amazon_scraper import search_amazon, search_amazon_via_google, scrape_amazon_specs
 
 def extract_specs_from_text(text):
     w, d = "不明", "不明"
@@ -409,9 +409,15 @@ def main():
                 print(f"    [*] Amazon検索クエリ: {amz_search_query}")
                 amz_results = search_amazon(amz_search_query, browser, max_results=5)
                 
+                if not amz_results:
+                    print("    [*] Amazon内検索でヒットしなかったため、Google経由で補填検索中...")
+                    amz_results = search_amazon_via_google(amz_search_query, browser, max_results=3)
+                
                 if amz_results:
                     # 画像判定で一致するか確認
-                    print(f"    [*] Amazonで見つかった {len(amz_results)} 件の候補を画像判定中...")
+                    print(f"    [*] Amazon候補 {len(amz_results)} 件を画像判定中...")
+                    # Google経由の結果は img_url が空の場合があるため、その場合は詳細ページから取得するか、スコアを調整する必要がある
+                    # ここでは一旦そのまま judge_similarity に渡す（judge_similarity 内でロードできなければスキップされる）
                     amz_judged = judge_similarity(img_url, amz_results)
                     
                     if amz_judged and amz_judged[0].get("score", 0) >= 70:

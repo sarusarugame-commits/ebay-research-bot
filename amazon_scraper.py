@@ -44,6 +44,52 @@ def search_amazon(keyword, browser_page, max_results=5):
         logger.error(f"    [!] Amazon検索エラー: {e}")
         return []
 
+def search_amazon_via_google(keyword, browser_page, max_results=3):
+    """Google検索経由で Amazon.jp の商品ページを探す"""
+    query = f"{keyword} amazon.co.jp"
+    url = f"https://www.google.com/search?q={re.sub(r'[\s　]+', '+', query)}"
+    logger.info(f"    [*] Google経由でAmazonを検索中: {url}")
+    
+    try:
+        browser_page.get(url)
+        # 検索結果が出るまで少し待機
+        browser_page.wait.ele_displayed('css:#search', timeout=10)
+        
+        results = []
+        # Googleの検索結果（リンク）を抽出
+        links = browser_page.eles('css:#search a')
+        
+        # Amazon.co.jp の商品ページ（dp/ や /gp/product/ を含む）を探す
+        seen_urls = set()
+        for link in links:
+            href = link.attr('href')
+            if not href: continue
+            
+            # Amazon.co.jp の商品詳細ページっぽいURLか判定
+            if "amazon.co.jp" in href and ("/dp/" in href or "/gp/product/" in href):
+                # クエリパラメータを除去して正規化
+                base_url = href.split('?')[0].split('#')[0]
+                if base_url in seen_urls: continue
+                seen_urls.add(base_url)
+                
+                # タイトルを取得（もしあれば）
+                title = link.text or "Amazon商品ページ"
+                
+                results.append({
+                    "platform": "Amazon(Google経由)",
+                    "title": title,
+                    "page_url": base_url,
+                    "img_url": "" # Google上では画像URL特定が難しいため空にする（画像判定が必要なら詳細ページから取る必要あり）
+                })
+                
+                if len(results) >= max_results:
+                    break
+                    
+        return results
+    except Exception as e:
+        logger.error(f"    [!] Google経由のAmazon検索エラー: {e}")
+        return []
+
 def scrape_amazon_specs(url, browser_page):
     """Amazonの商品詳細ページからサイズと重量を抽出する"""
     logger.info(f"    [*] Amazon詳細ページ解析中: {url}")
