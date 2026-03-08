@@ -395,8 +395,9 @@ def main():
             print("\n[*] 重量またはサイズが不明なため、Amazonからスペック情報を最終補完中...")
             try:
                 browser = get_fresh_browser()
-                # 検索クエリは型番を含めた正式名称を使用
+                # 型番がない商品も考慮し、AIが特定した日本語の商品名（またはeBayタイトル）で検索
                 amz_search_query = final_name if final_name != "特定不能" else target_item.get('title')
+                print(f"    [*] Amazon検索クエリ: {amz_search_query}")
                 amz_results = search_amazon(amz_search_query, browser, max_results=5)
                 
                 if amz_results:
