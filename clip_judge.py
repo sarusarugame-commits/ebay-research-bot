@@ -7,6 +7,7 @@ from io import BytesIO
 import cv2
 import numpy as np
 from rembg import remove, new_session
+from concurrent.futures import ThreadPoolExecutor
 
 # DINOv2モデルのロード
 print("[*] DINOv2モデル (dinov2_vits14) をロードしています...")
@@ -204,16 +205,24 @@ def judge_similarity(ebay_img_url, scraped_items):
         chunk = scraped_items[i : i + batch_size]
         valid_chunk_data = [] # (item, rgba, rgb)
 
-        # --- STEP 1: ロード & カラー判定 ---
+        # --- STEP 1: ロード & 背景除去 (並列処理) ---
+        print(f"    [*] バッチ {i//batch_size + 1}: {len(chunk)} 枚を並列処理中 (rembg)...")
+        
+        # 各アイテムの画像URLを抽出
+        urls_to_process = []
         for item in chunk:
-            try:
-                target_url = item.get("img_url") or (item.get("img_urls")[0] if item.get("img_urls") else None)
-                if not target_url:
-                    item["score"] = 0
-                    results.append(item)
-                    continue
+            target_url = item.get("img_url") or (item.get("img_urls")[0] if item.get("img_urls") else None)
+            urls_to_process.append(target_url)
 
-                cand_rgba = load_and_remove_bg(target_url)
+        # ThreadPoolExecutor で並列実行
+        with ThreadPoolExecutor(max_workers=batch_size) as executor:
+            # load_and_remove_bg に各URLを渡す
+            rgba_results = list(executor.map(load_and_remove_bg, urls_to_process))
+
+        # --- STEP 1.5: カラー判定 ---
+        for idx, item in enumerate(chunk):
+            try:
+                cand_rgba = rgba_results[idx]
                 if cand_rgba is None:
                     item["score"] = 0
                     results.append(item)
