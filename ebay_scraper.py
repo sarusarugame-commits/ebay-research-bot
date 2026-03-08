@@ -147,7 +147,13 @@ def scrape_ebay_newest_items(url, browser):
                 listing_date = parse_ebay_date(container.get_text(separator=' ', strip=True))
                 if listing_date and listing_date < limit_date: continue
                 title_tag = container.find(['h3', 'div', 'span'], class_=re.compile(r'title', re.I))
-                title = title_tag.get_text(strip=True) if title_tag else "Unknown"
+                
+                # 1. まずテキストを取得する
+                raw_title = title_tag.get_text(strip=True) if title_tag else "Unknown"
+                
+                # 2. eBay特有のゴミ文字（アクセシビリティテキスト）を強制削除！
+                title = raw_title.replace("Opens in a new window or tab", "").replace("Opens in a new window", "").strip()
+                
                 if "Shop on eBay" in title: continue
                 img_tag = container.find('img', class_=re.compile(r'image', re.I)) or container.find('img')
                 scraped_items.append({
