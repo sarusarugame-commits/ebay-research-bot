@@ -146,9 +146,6 @@ def main():
         print("\n[*] Google Vision API / Lens を使用して類似画像を検索中...")
         candidate_pages = find_similar_images_on_web(img_url, browser, max_results=15)
         
-        # 初期値として元のタイトルを設定（スコープ対策）
-        final_en_name = target_item.get('title')
-        
         scored_candidates = []
         if candidate_pages:
             jp_pattern = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]')
@@ -185,33 +182,61 @@ def main():
                     _, d = extract_specs_from_text(p.get("title", "") + " " + p.get("snippet", ""))
                     if d != "不明": raw_d = d; break
 
-            print("\n[*] eBay検索用の英語商品名を特定中...")
-            # 画像URLがある全候補（海外サイト含む）を抽出
-            en_candidates_with_img = [c for c in candidate_pages if c.get('img_url')]
-            
-            judged_en = []
-            if en_candidates_with_img:
-                # judge_similarity は Color 50%以下除外、DINOv2スコア付与を内包している！
-                judged_en = judge_similarity(img_url, en_candidates_with_img)
-                
-            # 70%以上に絞り込み、上位5商品を取得
-            top_en_candidates = [c for c in judged_en if float(c.get('score', 0)) >= 70][:5]
-            
-            if not top_en_candidates:
-                print("    [!] スコア70%以上の英語候補が見つかりませんでした。元のタイトルを使用します。")
-                top_en_candidates = [{"title": target_item.get('title')}]
 
-            # 作った関数を呼び出して英語名を決定！
-            from llm_namer import extract_english_product_name
-            en_name_data = extract_english_product_name(target_item.get('title'), top_en_candidates)
-            final_en_name = en_name_data.get("full_name", target_item.get('title'))
-            print(f" -> 最終確定した英語名: {final_en_name}")
 
         # 3. 商品名特定
         print("\n[*] AI を使用して日本語正式商品名を特定中...")
         name_data = extract_product_name(target_item.get('title'), scored_candidates)
         final_name = name_data.get("full_name", "特定不能")
         print(f" -> 最終確定した日本語名: {final_name}")
+
+        # ==========================================
+        # 【新規】英語商品名を特定する独立プロセス！
+        # ==========================================
+        print("\n[*] eBay検索用の英語商品名（正確な型番）を特定中...")
+        from validate_ebay_search_v3 import search_ebay_market, get_ebay_token
+        from llm_namer import extract_english_product_name
+        
+        token = get_ebay_token()
+        final_en_name = target_item.get('title') # 初期値
+        
+        if token:
+            print("    [*] 元のタイトルでeBay USをプレ検索し、海外の候補画像を収集します...")
+            # 1. 元のタイトルでeBayを検索して候補をごっそり取得
+            raw_items = search_ebay_market(token, target_item.get('title'), "EBAY_US", "NEW")
+            
+            # 2. 画像URLを持つ候補リストを作成
+            en_candidates = []
+            for itm in raw_items:
+                img = itm.get("image", {}).get("imageUrl")
+                if img:
+                    en_candidates.append({"title": itm.get("title"), "img_url": img})
+            
+            if en_candidates:
+                # 速度優先で上位30件程度に絞ってから画像判定に回す（PCスペックに余裕があれば絞らなくてもOK！）
+                en_candidates = en_candidates[:30]
+                
+                print(f"    [*] {len(en_candidates)} 件の海外候補を画像判定中 (Color >= 50, DINOv2 >= 70)...")
+                # 3. DINOv2 と OpenCV(Color Gate) が組み込まれた judge_similarity を実行
+                judged_en = judge_similarity(img_url, en_candidates)
+                
+                # 4. スコア70%以上の上位5件に絞る
+                top_en_matches = [m for m in judged_en if float(m.get("score", 0)) >= 70][:5]
+                
+                if top_en_matches:
+                    print(f"    [*] 画像が一致した {len(top_en_matches)} 件のタイトルから英語名を抽出中...")
+                    # 5. AI（Stepfun）に頻出単語リストを渡して純粋な英語名を作らせる
+                    en_name_data = extract_english_product_name(target_item.get('title'), top_en_matches)
+                    final_en_name = en_name_data.get("full_name", target_item.get('title'))
+                else:
+                    print("    [!] スコア70%以上の海外候補が見つかりませんでした。元のタイトルを使用します。")
+            else:
+                print("    [!] 画像付きの海外候補が取得できませんでした。")
+        else:
+            print("    [!] Token取得エラー。元のタイトルを使用します。")
+            
+        print(f" -> 最終確定した英語名: {final_en_name}")
+        # ==========================================
 
         # デバッグ画像用フォルダの作成
         debug_folder = f"debug_images/{item_id}_{datetime.datetime.now().strftime('%H%M%S')}"
