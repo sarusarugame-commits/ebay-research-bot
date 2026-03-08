@@ -432,9 +432,7 @@ def main():
                 amz_search_query = final_name if final_name != "特定不能" else target_item.get('title')
                 amz_results = search_amazon(amz_search_query, browser, max_results=5)
                 
-                if not amz_results:
-                    amz_results = search_amazon_via_google(amz_search_query, browser, max_results=3)
-                
+                # 1. Amazon内検索でヒットした場合（画像あり）
                 if amz_results:
                     amz_for_judge = [{"img_url": r.get("img_url", ""), "page_url": r.get("page_url", ""), "_orig": r} 
                                      for r in amz_results if r.get("img_url")]
@@ -450,6 +448,51 @@ def main():
                                 weight_final = truncate_weight(amz_specs["weight"])
                             if dims_final == "不明" and amz_specs.get("dimensions") != "不明":
                                 dims_final = adjust_dimensions(amz_specs["dimensions"])
+                
+                # 2. ヒットせず、Google経由で検索した場合（画像なし）
+                else:
+                    print("    [!] Amazon内検索でヒットしないため、Google経由でAmazonを検索します...")
+                    amz_google_results = search_amazon_via_google(amz_search_query, browser, max_results=3)
+                    
+                    if amz_google_results:
+                        for r in amz_google_results:
+                            amz_url = r.get("page_url")
+                            print(f"    [*] Google経由で発見したページを解析中: {amz_url}")
+                            
+                            # --- 🌟 追加: Amazon詳細ページを開いて画像を直接取得し、判定する ---
+                            tab = browser.latest_tab
+                            tab.get(amz_url)
+                            tab.wait(2)
+                            
+                            # 画像要素の取得 (Amazonの商品画像は主に #landingImage か #imgBlkFront)
+                            img_ele = tab.ele('#landingImage') or tab.ele('#imgBlkFront')
+                            if img_ele:
+                                amz_img_src = img_ele.attr('src') or img_ele.attr('data-old-hires')
+                                if amz_img_src:
+                                    print("    [*] 詳細ページから画像を取得。類似度判定を実行します...")
+                                    amz_judged = judge_similarity(img_url, [{"img_url": amz_img_src, "page_url": amz_url}])
+                                    if not amz_judged or amz_judged[0] is None or amz_judged[0].get("score", 0) < 70:
+                                        score = amz_judged[0].get("score", 0) if (amz_judged and amz_judged[0]) else 0
+                                        print(f"    [SKIP] 画像判定不合格 (Score: {score:.1f}%)")
+                                        continue
+                                    print(f"    [MATCH] 画像判定合格！スペックを抽出します...")
+                            # --------------------------------------------------------
+                            
+                            # 判定に合格した場合（または画像が取れなかった場合）にスペック抽出
+                            amz_specs = scrape_amazon_specs(amz_url, browser)
+                            
+                            found_any = False
+                            if weight_final == "不明" and amz_specs.get("weight") != "不明":
+                                weight_final = truncate_weight(amz_specs["weight"])
+                                found_any = True
+                            if dims_final == "不明" and amz_specs.get("dimensions") != "不明":
+                                dims_final = adjust_dimensions(amz_specs["dimensions"])
+                                found_any = True
+                                
+                            if found_any:
+                                print("    [MATCH] Google経由のAmazonページからスペックの補完に成功しました。")
+                                break
+                                
             except Exception as e:
                 print(f"    [!] Amazonスペック補完中にエラー: {e}")
 

@@ -100,45 +100,68 @@ def scrape_amazon_specs(url, browser_page):
         # ページ読み込み待機
         time.sleep(2)
         
+        # ページ全体のテキストを先に取得しておく（フォールバック用）
+        body_ele = browser_page.ele('tag:body')
+        full_text = body_ele.text if body_ele else ""
+        
         # 1. 箇条書き詳細 (detailBullets_feature_div) を探す
         bullets_div = browser_page.ele('#detailBullets_feature_div')
         if bullets_div:
             text = bullets_div.text
-            # 重量
-            w_match = re.search(r"(?:発送重量|商品の重量|Item Weight)\s*[:：]\s*([\d.]+)\s*(g|kg|グラム|キロ)", text, re.I)
+            
+            # 重量 (本体重量などを追加し、改行やスペースを許容)
+            w_match = re.search(r"(?:発送重量|商品の重量|本体重量|Item Weight)\s*[:：]?\s*([\d.]+)\s*(g|kg|グラム|キロ)", text, re.I)
             if w_match:
                 specs["weight"] = f"{w_match.group(1)}{w_match.group(2)}"
             
-            # 梱包サイズ/商品サイズ
-            d_match = re.search(r"(?:梱包サイズ|商品サイズ|Product Dimensions|Package Dimensions)\s*[:：]\s*([\d.x *×]+)\s*(cm|mm|センチ|インチ|in)", text, re.I)
+            # 梱包サイズ/商品の寸法 (表記揺れを追加、数字間の改行も許容)
+            d_match = re.search(r"(?:梱包サイズ|商品サイズ|商品の寸法|製品サイズ|Product Dimensions|Package Dimensions)\s*[:：]?\s*([\d.x\s*×]+)\s*(cm|mm|センチ|インチ|in)", text, re.I)
             if d_match:
-                specs["dimensions"] = f"{d_match.group(1).strip()} {d_match.group(2)}"
+                clean_dim = re.sub(r'\s+', ' ', d_match.group(1)).strip()
+                specs["dimensions"] = f"{clean_dim} {d_match.group(2)}"
 
-        # 2. テーブル形式 (prodDetails) を探す (1で見つからなかった場合)
+        # 2. テーブル形式 (prodDetails) を探す
         if specs["weight"] == "不明" or specs["dimensions"] == "不明":
             table = browser_page.ele('#prodDetails')
             if table:
                 text = table.text
                 if specs["weight"] == "不明":
-                    w_match = re.search(r"(?:発送重量|商品の重量|Item Weight)\s+([\d.]+)\s*(g|kg|グラム|キロ)", text, re.I)
+                    w_match = re.search(r"(?:発送重量|商品の重量|本体重量|Item Weight)\s*[:：]?\s*([\d.]+)\s*(g|kg|グラム|キロ)", text, re.I)
                     if w_match: specs["weight"] = f"{w_match.group(1)}{w_match.group(2)}"
                 
                 if specs["dimensions"] == "不明":
-                    d_match = re.search(r"(?:梱包サイズ|商品サイズ|Product Dimensions)\s+([\d.x *×]+)\s*(cm|mm)", text, re.I)
-                    if d_match: specs["dimensions"] = f"{d_match.group(1).strip()} {d_match.group(2)}"
+                    d_match = re.search(r"(?:梱包サイズ|商品サイズ|商品の寸法|製品サイズ|Product Dimensions)\s*[:：]?\s*([\d.x\s*×]+)\s*(cm|mm)", text, re.I)
+                    if d_match: 
+                        clean_dim = re.sub(r'\s+', ' ', d_match.group(1)).strip()
+                        specs["dimensions"] = f"{clean_dim} {d_match.group(2)}"
 
-        # 3. テクニカルテーブル形式 (common for some categories)
+        # 3. テクニカルテーブル形式
         if specs["weight"] == "不明" or specs["dimensions"] == "不明":
             tech_div = browser_page.ele('#productDetails_techSpec_section_1')
             if tech_div:
                 text = tech_div.text
                 if specs["weight"] == "不明":
-                    w_match = re.search(r"(?:重量|Weight)\s+([\d.]+)\s*(g|kg)", text, re.I)
+                    w_match = re.search(r"(?:重量|Weight)\s*[:：]?\s*([\d.]+)\s*(g|kg)", text, re.I)
                     if w_match: specs["weight"] = f"{w_match.group(1)}{w_match.group(2)}"
                 
                 if specs["dimensions"] == "不明":
-                    d_match = re.search(r"(?:サイズ|Dimensions)\s+([\d.x *×]+)\s*(cm|mm)", text, re.I)
-                    if d_match: specs["dimensions"] = f"{d_match.group(1).strip()} {d_match.group(2)}"
+                    d_match = re.search(r"(?:サイズ|Dimensions)\s*[:：]?\s*([\d.x\s*×]+)\s*(cm|mm)", text, re.I)
+                    if d_match: 
+                        clean_dim = re.sub(r'\s+', ' ', d_match.group(1)).strip()
+                        specs["dimensions"] = f"{clean_dim} {d_match.group(2)}"
+
+        # 4. 🌟追加：ページ全体からの強引な抽出 (上の3つの場所が見つからなかった場合の最終手段)
+        if specs["weight"] == "不明" or specs["dimensions"] == "不明":
+            if full_text:
+                if specs["weight"] == "不明":
+                    w_match = re.search(r"(?:発送重量|商品の重量|本体重量|Item Weight)\s*[:：]?\s*([\d.]+)\s*(g|kg|グラム|キロ)", full_text, re.I)
+                    if w_match: specs["weight"] = f"{w_match.group(1)}{w_match.group(2)}"
+                
+                if specs["dimensions"] == "不明":
+                    d_match = re.search(r"(?:梱包サイズ|商品サイズ|商品の寸法|製品サイズ|梱包サイズ\(LxWxH\))\s*[:：]?\s*([\d.x\s*×]+)\s*(cm|mm|センチ|インチ|in)", full_text, re.I)
+                    if d_match:
+                        clean_dim = re.sub(r'\s+', ' ', d_match.group(1)).strip()
+                        specs["dimensions"] = f"{clean_dim} {d_match.group(2)}"
 
         return specs
     except Exception as e:

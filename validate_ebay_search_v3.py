@@ -16,8 +16,13 @@ from clip_judge import judge_similarity
 from llm_vision_judge import verify_model_match
 from ebay_scraper import get_browser_page
 
-# 為替レート (簡易的な固定値)
-GBP_TO_USD = 1.25
+# ======================================================================
+# ⚙️ 動作モード設定（True/False で切り替え）
+# ======================================================================
+# True  = クライアント仕様: 常に ebay.com(US) を使い、Ship to だけをUS/UKに切り替える（通貨はUSD）
+# False = 本来の仕様: USは ebay.com、UKは ebay.co.uk の現地サイトを使い分ける
+USE_STRICT_CLIENT_MODE = True
+# ======================================================================
 
 def get_ebay_token():
     if not EBAY_APP_ID or not EBAY_CLIENT_SECRET:
@@ -41,12 +46,6 @@ def get_ebay_token():
     except Exception as e:
         print(f"[!] トークン取得例外: {e}")
         return None
-
-def convert_to_usd(value, currency):
-    val = float(value)
-    if currency == "USD": return val
-    if currency == "GBP": return val * GBP_TO_USD
-    return val
 
 def extract_item_id(url):
     """URLからeBayのItem IDを抽出する (タイトル付きURLにも対応)"""
@@ -88,20 +87,24 @@ def api_ebay_search(keyword, market_id="EBAY_US", condition="NEW", token=None):
     if not token:
         token = get_ebay_token()
     
-    # コンディションマッピング
     cond_filter = "itemConditions:{NEW}" if condition.upper() == "NEW" else "itemConditions:{USED|VERY_GOOD|GOOD|ACCEPTABLE}"
     
     url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+    
+    # 🌟 モードによるマーケットIDの切り替え
+    target_marketplace = "EBAY_US" if USE_STRICT_CLIENT_MODE else market_id
+    
     headers = {
         "Authorization": f"Bearer {token}",
-        "X-EBAY-C-MARKETPLACE-ID": market_id,
+        "X-EBAY-C-MARKETPLACE-ID": target_marketplace,
+        "X-EBAY-C-ENDUSERCTX": "contextualLocation=country=US,zip=10001" if market_id=="EBAY_US" else "contextualLocation=country=GB,zip=E1 6AN",
         "Content-Type": "application/json"
     }
     params = {
         "q": keyword,
         "filter": cond_filter,
         "sort": "pricePlusShipping", # 送料込み最安値順
-        "limit": 50
+        "limit": 60
     }
     
     print(f"    [*] eBay API検索開始 ({market_id}, {condition}): {keyword}")
@@ -139,7 +142,11 @@ def hybrid_ebay_search(keyword, market_id="EBAY_US", condition="NEW", retry_coun
     eBayの検索結果ページをスクレイピングして候補を取得する (ハイブリッド仕様)
     見つからなかった場合はキーワードを後ろから削って再検索するフォールバック機能付き。
     """
-    base_url = "https://www.ebay.com/sch/i.html" if market_id == "EBAY_US" else "https://www.ebay.co.uk/sch/i.html"
+    # 🌟 モードによるURLの切り替え
+    if USE_STRICT_CLIENT_MODE:
+        base_url = "https://www.ebay.com/sch/i.html"
+    else:
+        base_url = "https://www.ebay.com/sch/i.html" if market_id == "EBAY_US" else "https://www.ebay.co.uk/sch/i.html"
     
     # コンディションコード: 新品: 1000, 中古: 3000
     cond_code = "1000" if condition.upper() == "NEW" else "3000"
@@ -150,6 +157,17 @@ def hybrid_ebay_search(keyword, market_id="EBAY_US", condition="NEW", retry_coun
         "_sop": 15, # price + shipping lowest first
         "rt": "nc"
     }
+    
+    # =======================================================
+    # 🌟 修正: URLパラメータで強制的に Ship to (配送先) を変更
+    # =======================================================
+    if market_id == "EBAY_US":
+        params["_fcid"] = "1"      # Country ID: 1 = US
+        params["_stpos"] = "10001" # Zip code: New York
+    else:
+        params["_fcid"] = "3"      # Country ID: 3 = UK
+        params["_stpos"] = "E1 6AN" # Zip code: London
+    # =======================================================
     
     search_url = f"{base_url}?{urllib.parse.urlencode(params)}"
     print(f"    [*] eBayハイブリッド検索(SCR)開始 ({market_id}, {condition}): {search_url}")
@@ -169,34 +187,55 @@ def hybrid_ebay_search(keyword, market_id="EBAY_US", condition="NEW", retry_coun
         # ========================================================
         tab.wait.load_start() # ページのロード開始を待つ
         tab.wait(3)           # JavaScriptによる検索結果の非同期描画を待機
-        tab.scroll.down(800)  # スクロールして画像の遅延読み込み(Lazy Load)をトリガー
-        tab.wait(1)           # 画像URLがセットされるのを待つ
-        # ========================================================
+        tab.scroll.down(1000) # 画像を読み込ませるためのスクロール
+        tab.wait(2)           
         
         soup = BeautifulSoup(tab.html, 'html.parser')
-        # 's-item' を含む要素を取得
-        items = soup.find_all(['li', 'div'], class_=re.compile(r's-item', re.I))
-        print(f"    [DEBUG] HTMLから 's-item' 要素を {len(items)} 個検出しました。")
         
-        for itm in items:
-            link_tag = itm.find('a', class_=re.compile(r's-item__link')) or itm.find('a')
-            if not link_tag: continue
-            
+        # =======================================================
+        # 修正: 's-item' クラス依存をやめ、確実な '/itm/' リンクベースで探索
+        # =======================================================
+        itm_links = soup.find_all('a', href=re.compile(r'/itm/'))
+        print(f"    [DEBUG] HTMLから '/itm/' リンクを {len(itm_links)} 個検出しました。")
+        
+        for link_tag in itm_links:
             url = link_tag.get('href', '')
             item_id = extract_item_id(url)
             if not item_id: continue
             
-            title_tag = itm.find(['div', 'span', 'h3'], class_=re.compile(r's-item__title|title', re.I))
-            title = title_tag.get_text(strip=True) if title_tag else "No Title"
+            # リンクの親要素を遡って、商品ブロック全体（コンテナ）を特定する
+            container = link_tag
+            for _ in range(8):
+                container = container.parent
+                if not container: break
+                # <li> または "item" っぽいクラスを持つ <div> をコンテナとみなす
+                if container.name == 'li' or (container.name == 'div' and container.get('class') and any('item' in c.lower() for c in container.get('class'))):
+                    break
             
-            if "Shop on eBay" in title or title == "No Title": continue
+            if not container:
+                continue
+
+            # タイトルの取得 (タグ同士がくっつくのを防ぐためスペース区切りで取得)
+            title_tag = container.find(['div', 'span', 'h3'], class_=re.compile(r'title', re.I))
+            title = title_tag.get_text(" ", strip=True) if title_tag else link_tag.get_text(" ", strip=True)
             
-            img_tag = itm.find('img')
+            # 🌟修正: 商品を捨てるのではなく、eBay特有の隠しテキスト（ノイズ）だけを置換して消す
+            title = re.sub(r'Opens in a new window or tab|Opens in a new window|New Listing', '', title, flags=re.IGNORECASE).strip()
+            
+            # 不要なヘッダーリンクなどを除外
+            if "Shop on eBay" in title or not title or len(title) < 5: 
+                continue
+            
+            # 画像の取得
+            img_tag = container.find('img')
             img_url = ""
             if img_tag:
-                img_url = img_tag.get('src') or img_tag.get('data-src') or ""
+                # eBayの遅延読み込み対応 (srcがダミーなら data-src などを拾う)
+                img_url = img_tag.get('data-src') or img_tag.get('src') or ""
+                if img_url.startswith('data:image') and img_tag.get('data-src'):
+                    img_url = img_tag.get('data-src')
 
-            # IDの重複登録を防ぐ
+            # 重複登録の防止
             if not any(r['itemId'] == item_id for r in results):
                 results.append({
                     "itemId": item_id,
@@ -205,22 +244,23 @@ def hybrid_ebay_search(keyword, market_id="EBAY_US", condition="NEW", retry_coun
                     "img_url": img_url
                 })
             
-            if len(results) >= 20: break
-            
+            if len(results) >= 60: break
         # =======================================================
-        # 🌟 追加：検索結果が0件だった場合の自動緩和（フォールバック）
-        # =======================================================
-        # 抽出できた商品が0件で、かつリトライ上限（3回）に達していない場合
+        
+        # 🌟 フォールバックロジック (0件だった場合の自動緩和) はそのまま残す
         if len(results) == 0 and retry_count < 3:
             words = keyword.split()
-            # 単語が3つ以上ある場合のみ削る（ブランド名＋型番 は最低限残すため）
             if len(words) >= 3:
-                # 最後の1単語を削る (例: "analog titanium solar" -> "analog titanium")
                 new_keyword = " ".join(words[:-1]) 
                 print(f"    [!] 候補が0件のため、キーワードを緩和して再検索します (リトライ {retry_count+1}/3): {new_keyword}")
                 # 自身を再帰呼び出し
                 return hybrid_ebay_search(new_keyword, market_id, condition, retry_count + 1)
-        # =======================================================
+        
+        # ⚠️ デバッグ用: それでも0件の場合は、原因究明のためにHTMLを保存する
+        if len(results) == 0:
+            with open(f"debug_{market_id}_0_results.html", "w", encoding="utf-8") as f:
+                f.write(tab.html)
+            print(f"    [DEBUG] 原因究明のため、HTMLを debug_{market_id}_0_results.html に保存しました。")
 
         print(f"    [*] ハイブリッド検索完了: {len(results)} 件の候補を抽出しました。")
         return results
@@ -230,10 +270,15 @@ def hybrid_ebay_search(keyword, market_id="EBAY_US", condition="NEW", retry_coun
 
 def get_item_details(token, item_id, marketplace_id):
     url = f"https://api.ebay.com/buy/browse/v1/item/{item_id}"
+    
+    # 🌟 モードによるマーケットIDの切り替え
+    target_marketplace = "EBAY_US" if USE_STRICT_CLIENT_MODE else marketplace_id
+    
     headers = {
         "Authorization": f"Bearer {token}",
-        "X-EBAY-C-MARKETPLACE-ID": marketplace_id,
-        "X-EBAY-C-ENDUSERCTX": "contextualLocation=country=US,zip=10001" if marketplace_id=="EBAY_US" else "contextualLocation=country=GB,zip=E1 6AN"
+        "X-EBAY-C-MARKETPLACE-ID": target_marketplace,
+        "X-EBAY-C-ENDUSERCTX": "contextualLocation=country=US,zip=10001" if marketplace_id=="EBAY_US" else "contextualLocation=country=GB,zip=E1 6AN",
+        "X-EBAY-C-CURRENCY": "USD" 
     }
     try:
         r = requests.get(url, headers=headers, timeout=15)
@@ -308,7 +353,7 @@ def process_market(token, market_id, query, ref_img, condition, model_number="")
         price_val = float(details.get("price", {}).get("value", 0))
         price_currency = details.get("price", {}).get("currency", "USD")
         
-        total_usd = convert_to_usd(price_val, price_currency) + convert_to_usd(ship_val, ship_currency)
+        total_usd = price_val + ship_val
         
         print(f"      [OK] ID: {item_id} - 配送可 (本体 {price_val} + 送料 {ship_val} {ship_currency}) -> 合計 ${total_usd:.2f} USD")
         

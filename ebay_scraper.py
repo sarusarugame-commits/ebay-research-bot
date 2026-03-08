@@ -122,7 +122,26 @@ def scrape_ebay_item_specs(item_id, browser):
         return {"weight": "不明", "dimensions": "不明"}
 
 def scrape_ebay_newest_items(url, browser):
-    print(f"[*] eBay一覧読込中...", flush=True)
+    import urllib.parse
+    
+    # URLに配送先強制パラメータを追加
+    parsed_url = urllib.parse.urlparse(url)
+    params = urllib.parse.parse_qs(parsed_url.query)
+    
+    # 既存のリスト形式から単一値に変換して上書き
+    params = {k: v[0] for k, v in params.items()}
+    
+    if "ebay.com" in parsed_url.netloc:
+        params["_fcid"] = "1"      # Country: US
+        params["_stpos"] = "10001" # Zip: New York
+    elif "ebay.co.uk" in parsed_url.netloc:
+        params["_fcid"] = "3"      # Country: UK
+        params["_stpos"] = "E1 6AN" # Zip: London
+        
+    new_query = urllib.parse.urlencode(params)
+    url = urllib.parse.urlunparse(parsed_url._replace(query=new_query))
+    
+    print(f"[*] eBay一覧読込中 (Ship-to強制): {url}", flush=True)
     scraped_items = []
     unique_ids = set()
     max_pages = 5
@@ -136,7 +155,12 @@ def scrape_ebay_newest_items(url, browser):
             print(f"[*] eBay一覧 {page_num}ページ目を解析中...", flush=True)
             tab.wait(2)
             tab.scroll.down(1500)
+            tab.wait(1)
             soup = BeautifulSoup(tab.html, 'html.parser')
+            
+            # =======================================================
+            # 修正: 's-item' クラス依存をやめ、確実な '/itm/' リンクベースで探索
+            # =======================================================
             itm_links = soup.find_all('a', href=re.compile(r'/itm/'))
             
             now = datetime.datetime.now()
@@ -144,45 +168,61 @@ def scrape_ebay_newest_items(url, browser):
             limit_date = datetime.datetime(now.year, now.month, 1) if now.day <= 15 else datetime.datetime(now.year, now.month, 16)
             
             items_on_this_page = 0
-            found_older_item = False
+            found_older_item_on_this_page = False
             
             for link_tag in itm_links:
                 try:
-                    link = link_tag.get('href')
-                    item_id_match = re.search(r'itm/(\d+)', link)
+                    url = link_tag.get('href', '')
+                    # タイトル付きURLにも対応した正規表現
+                    item_id_match = re.search(r'/itm/(?:.*?/)?(\d{9,})', url)
                     if not item_id_match: continue
                     item_id = item_id_match.group(1)
+                    
                     if item_id in unique_ids: continue
                     unique_ids.add(item_id)
                     
-                    container = None
-                    p = link_tag
+                    # リンクの親要素を遡って、商品ブロック全体（コンテナ）を特定する
+                    container = link_tag
                     for _ in range(10):
-                        p = p.parent
-                        if not p: break
-                        if 's-item' in p.get('class', []) or 's-card' in p.get('class', []):
-                            container = p; break
+                        container = container.parent
+                        if not container: break
+                        if container.name == 'li' or (container.name == 'div' and container.get('class') and any('item' in c.lower() for c in container.get('class'))):
+                            break
+                    
                     if not container: continue
                     
-                    listing_date = parse_ebay_date(container.get_text(separator=' ', strip=True))
+                    # 日付の取得: 商品カード全体のテキストから探すとセラー情報などを誤爆するため、
+                    # まずは特定のクラス (listing-date) を探し、なければ全体から探す。
+                    date_tag = container.find(['span', 'div'], class_=re.compile(r'listing-date|location', re.I))
+                    date_text = date_tag.get_text(strip=True) if date_tag else container.get_text(" ", strip=True)
+                    listing_date = parse_ebay_date(date_text)
                     
-                    # リミット日より古い商品が見つかったら、このページで終わり（かつ次のページも不要）
+                    # 「New Listing」などの文字があれば現在時刻として扱う
+                    if not listing_date and "new listing" in date_text.lower():
+                        listing_date = now
+
+                    # リミット日より古い商品が見つかったら、このページで終わり
                     if listing_date and listing_date < limit_date:
-                        found_older_item = True
+                        print(f"    [DEBUG] 期間外の商品を検出: {listing_date} < {limit_date} (Text: {date_text[:30]}...)")
+                        found_older_item_on_this_page = True
                         continue
                         
                     title_tag = container.find(['h3', 'div', 'span'], class_=re.compile(r'title', re.I))
                     raw_title = title_tag.get_text(strip=True) if title_tag else "Unknown"
-                    title = raw_title.replace("Opens in a new window or tab", "").replace("Opens in a new window", "").strip()
-                    if "Shop on eBay" in title: continue
+                    title = re.sub(r'Opens in a new window or tab|Opens in a new window|New Listing', '', raw_title, flags=re.IGNORECASE).strip()
                     
-                    img_tag = container.find('img', class_=re.compile(r'image', re.I)) or container.find('img')
+                    if "Shop on eBay" in title or not title or len(title) < 5: 
+                        continue
+                    
+                    img_tag = container.find('img')
                     img_url = ""
                     if img_tag:
                         img_url = img_tag.get('data-src') or img_tag.get('src') or ""
+                        if img_url.startswith('data:image') and img_tag.get('data-src'):
+                            img_url = img_tag.get('data-src')
 
                     scraped_items.append({
-                        "id": item_id, "title": title, "link": link, 
+                        "id": item_id, "title": title, "link": url, 
                         "image_url": img_url,
                         "timestamp": listing_date if listing_date else now
                     })
@@ -191,8 +231,8 @@ def scrape_ebay_newest_items(url, browser):
             
             print(f"  -> {page_num}ページ目: {items_on_this_page} 件の新規商品を検出しました。", flush=True)
             
-            # 古い商品が見つかった、あるいはこのページで1件も新規がなければ終了
-            if found_older_item:
+            # 古い商品が見つかったら終了
+            if found_older_item_on_this_page:
                 print(f"[*] 指定期間外の商品に到達したため、検索を終了します。", flush=True)
                 break
             
