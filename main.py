@@ -414,34 +414,34 @@ def main():
                     amz_results = search_amazon_via_google(amz_search_query, browser, max_results=3)
                 
                 if amz_results:
-                    # 画像判定で一致するか確認
                     print(f"    [*] Amazon候補 {len(amz_results)} 件を画像判定中...")
-                    # Google経由の結果は img_url が空の場合があるため、その場合は詳細ページから取得するか、スコアを調整する必要がある
-                    # ここでは一旦そのまま judge_similarity に渡す（judge_similarity 内でロードできなければスキップされる）
                     amz_judged = judge_similarity(img_url, amz_results)
                     
-                    if amz_judged and amz_judged[0].get("score", 0) >= 70:
+                    # ✅ 修正ポイント: amz_judgedが空でないか、かつ[0]がNoneでないかチェック
+                    if amz_judged and amz_judged[0] is not None and amz_judged[0].get("score", 0) >= 70:
                         best_amz = amz_judged[0]
                         amz_url = best_amz.get("page_url")
                         
                         if not amz_url:
-                            print("    [-] Amazon一致商品のURLが取得できませんでした。")
+                            print("    [-] Amazon一致商品のURLが取得できませんでした。スキップします。")
                         else:
                             print(f"    [MATCH] Amazonで一致商品を発見 (Score: {best_amz['score']:.1f}%). 詳細解析中...")
-                            
-                            amz_specs = scrape_amazon_specs(amz_url, browser)
-                            if weight_final == "不明" and amz_specs.get("weight") != "不明":
-                                weight_final = truncate_weight(amz_specs["weight"])
-                                print(f"    [+] Amazonから重量を取得: {weight_final}")
-                            if dims_final == "不明" and amz_specs.get("dimensions") != "不明":
-                                dims_final = adjust_dimensions(amz_specs["dimensions"])
-                                print(f"    [+] Amazonからサイズを取得: {dims_final}")
+                            try:
+                                amz_specs = scrape_amazon_specs(amz_url, browser)
+                                if weight_final == "不明" and amz_specs.get("weight") != "不明":
+                                    weight_final = truncate_weight(amz_specs["weight"])
+                                    print(f"    -> 重量補完: {weight_final}")
+                                if dims_final == "不明" and amz_specs.get("dimensions") != "不明":
+                                    dims_final = adjust_dimensions(amz_specs["dimensions"])
+                                    print(f"    -> サイズ補完: {dims_final}")
+                            except Exception as e:
+                                print(f"    [!] Amazonスペック取得中にエラー: {e}")
                     else:
-                        print("    [-] Amazonで十分に一致する商品は見つかりませんでした。")
+                        print("    [-] Amazon候補のスコアが基準未満のため、スペック補完をスキップします。")
                 else:
-                    print("    [-] Amazonに該当する商品は見つかりませんでした。")
+                    print("    [-] Amazon候補が見つかりませんでした。")
             except Exception as e:
-                print(f"    [!] Amazonスペック補完中にエラー: {e}")
+                print(f"    [!] Amazonスペック補填処理全体でエラー: {e}")
 
         best_item = tentative_best_item
         if best_item:
