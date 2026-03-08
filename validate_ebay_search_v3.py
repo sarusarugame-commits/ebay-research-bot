@@ -49,9 +49,10 @@ def convert_to_usd(value, currency):
     return val
 
 def extract_item_id(url):
-    """URLからeBayのItem IDを抽出する"""
+    """URLからeBayのItem IDを抽出する (タイトル付きURLにも対応)"""
     if not url: return None
-    match = re.search(r'/itm/(\d+)', url)
+    # /itm/123456789 または /itm/item-title/123456789 に対応
+    match = re.search(r'/itm/(?:.*?/)?(\d{9,})', url)
     return match.group(1) if match else None
 
 def get_valid_shipping_cost(details):
@@ -133,9 +134,10 @@ def api_ebay_search(keyword, market_id="EBAY_US", condition="NEW", token=None):
         print(f"    [!] API検索中に例外: {e}")
         return []
 
-def hybrid_ebay_search(keyword, market_id="EBAY_US", condition="NEW"):
+def hybrid_ebay_search(keyword, market_id="EBAY_US", condition="NEW", retry_count=0):
     """
     eBayの検索結果ページをスクレイピングして候補を取得する (ハイブリッド仕様)
+    見つからなかった場合はキーワードを後ろから削って再検索するフォールバック機能付き。
     """
     base_url = "https://www.ebay.com/sch/i.html" if market_id == "EBAY_US" else "https://www.ebay.co.uk/sch/i.html"
     
@@ -161,37 +163,65 @@ def hybrid_ebay_search(keyword, market_id="EBAY_US", condition="NEW"):
     try:
         tab = browser.latest_tab
         tab.get(search_url)
-        # 検索結果の読み込みを待機
-        tab.wait.ele_displayed('css:.s-item', timeout=10)
+        
+        # ========================================================
+        # 修正：早とちりを防ぎ、遅延レンダリングされた「一部一致結果」を待つ
+        # ========================================================
+        tab.wait.load_start() # ページのロード開始を待つ
+        tab.wait(3)           # JavaScriptによる検索結果の非同期描画を待機
+        tab.scroll.down(800)  # スクロールして画像の遅延読み込み(Lazy Load)をトリガー
+        tab.wait(1)           # 画像URLがセットされるのを待つ
+        # ========================================================
         
         soup = BeautifulSoup(tab.html, 'html.parser')
-        items = soup.find_all('div', class_='s-item__wrapper') or soup.find_all('div', class_='s-item__info')
+        # 's-item' を含む要素を取得
+        items = soup.find_all(['li', 'div'], class_=re.compile(r's-item', re.I))
+        print(f"    [DEBUG] HTMLから 's-item' 要素を {len(items)} 個検出しました。")
         
         for itm in items:
-            link_tag = itm.find('a', class_='s-item__link')
+            link_tag = itm.find('a', class_=re.compile(r's-item__link')) or itm.find('a')
             if not link_tag: continue
             
             url = link_tag.get('href', '')
             item_id = extract_item_id(url)
             if not item_id: continue
             
-            title_tag = itm.find('div', class_='s-item__title') or itm.find('span', role='heading')
+            title_tag = itm.find(['div', 'span', 'h3'], class_=re.compile(r's-item__title|title', re.I))
             title = title_tag.get_text(strip=True) if title_tag else "No Title"
-            if "Shop on eBay" in title: continue
+            
+            if "Shop on eBay" in title or title == "No Title": continue
             
             img_tag = itm.find('img')
             img_url = ""
             if img_tag:
                 img_url = img_tag.get('src') or img_tag.get('data-src') or ""
 
-            results.append({
-                "itemId": item_id,
-                "title": title,
-                "item_url": url,
-                "img_url": img_url
-            })
+            # IDの重複登録を防ぐ
+            if not any(r['itemId'] == item_id for r in results):
+                results.append({
+                    "itemId": item_id,
+                    "title": title,
+                    "item_url": url,
+                    "img_url": img_url
+                })
+            
             if len(results) >= 20: break
             
+        # =======================================================
+        # 🌟 追加：検索結果が0件だった場合の自動緩和（フォールバック）
+        # =======================================================
+        # 抽出できた商品が0件で、かつリトライ上限（3回）に達していない場合
+        if len(results) == 0 and retry_count < 3:
+            words = keyword.split()
+            # 単語が3つ以上ある場合のみ削る（ブランド名＋型番 は最低限残すため）
+            if len(words) >= 3:
+                # 最後の1単語を削る (例: "analog titanium solar" -> "analog titanium")
+                new_keyword = " ".join(words[:-1]) 
+                print(f"    [!] 候補が0件のため、キーワードを緩和して再検索します (リトライ {retry_count+1}/3): {new_keyword}")
+                # 自身を再帰呼び出し
+                return hybrid_ebay_search(new_keyword, market_id, condition, retry_count + 1)
+        # =======================================================
+
         print(f"    [*] ハイブリッド検索完了: {len(results)} 件の候補を抽出しました。")
         return results
     except Exception as e:

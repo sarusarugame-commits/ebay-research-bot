@@ -155,7 +155,9 @@ def extract_english_product_name(ebay_title, scored_candidates):
         "2. 「brand」「series」「model」を明確に分けてください。\n"
         "3. 「keywords」は、色や限定版などの判別に不可不可欠な情報を3つ以内に絞って抽出してください（出現数3以上の単語を優先）。\n"
         "4. 必ず以下のJSON形式のみを出力してください（解説は一切不要）。\n"
-        "   {\"brand\": \"Brand\", \"series\": \"Series\", \"model\": \"Model\", \"keywords\": \"Keywords\"}"
+        "   {\"brand\": \"Brand\", \"series\": \"Series\", \"model\": \"Model\", \"keywords\": \"Keywords\"}\n"
+        "5. 【重要】動画共有プラットフォーム名、レビューや個人的な感想を示す単語、主観的な評価など、商品の型番や固有名称を特定する上で無関係なノイズワードは完全に除外してください。\n"
+        "6. 【重要】ただし、商品の素材、製造年代、希少性、限定仕様など、商品の「客観的な価値」や「検索意図」に直結する属性キーワードは、検索クエリとして不可欠なため必ず保持してください。"
     )
 
     models = [
