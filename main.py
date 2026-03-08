@@ -138,6 +138,9 @@ def main():
         print("\n[*] Google Vision API / Lens を使用して類似画像を検索中...")
         candidate_pages = find_similar_images_on_web(img_url, browser, max_results=15)
         
+        # 初期値として元のタイトルを設定（スコープ対策）
+        final_en_name = target_item.get('title')
+        
         scored_candidates = []
         if candidate_pages:
             jp_pattern = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]')
