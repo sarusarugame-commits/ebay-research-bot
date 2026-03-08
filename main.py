@@ -203,22 +203,15 @@ def main():
         en_candidates = search_global_images_by_lens(img_url, browser)
         
         if en_candidates:
-            # 司令官の指示通り、Color 50を無条件除外とする！
-            print(f"    [*] {len(en_candidates)} 件の海外候補を画像判定中 (Color >= 50, DINOv2 >= 70)...")
-            judged_en = judge_similarity(img_url, en_candidates, color_gate=50)
+            # 司令官の指示により、画像類似判定（DINO/Color）は行わず、取得したタイトル群から直接AIが抽出します
+            print(f"    [*] 取得した {len(en_candidates)} 件の海外候補から英語名を抽出中...")
+            # 上位5件程度の候補をAIに渡す
+            top_en_matches = en_candidates[:5]
             
-            # 2. DINOv2で70%以上の上位5件に絞る
-            top_en_matches = [m for m in judged_en if float(m.get("score", 0)) >= 70][:5]
-            
-            if top_en_matches:
-                print(f"    [*] 画像が一致した {len(top_en_matches)} 件のタイトルから英語名を抽出中...")
-                # 3. 5商品の頻出単語カウント → LLMで決定 (前回修正したllm_namerのロジックを使用)
-                en_name_data = extract_english_product_name(target_item.get('title'), top_en_matches)
-                final_en_name = en_name_data.get("full_name", target_item.get('title'))
-            else:
-                print("    [!] スコア70%以上の海外候補が見つかりませんでした。元のタイトルを使用します。")
+            en_name_data = extract_english_product_name(target_item.get('title'), top_en_matches)
+            final_en_name = en_name_data.get("full_name", target_item.get('title'))
         else:
-            print("    [!] 画像付きの海外候補が取得できませんでした。元のタイトルを使用します。")
+            print("    [!] 海外候補が取得できませんでした。元のタイトルを使用します。")
             
         print(f" -> 最終確定した英語名: {final_en_name}")
         # ==========================================
