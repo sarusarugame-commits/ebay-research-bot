@@ -29,6 +29,8 @@ from surugaya_scraper import search_surugaya, scrape_surugaya_item
 from llm_vision_judge import estimate_weight_with_llm, analyze_item_safety_and_tariff
 from clip_judge import judge_similarity
 # verify_with_lightglue は clip_judge 内で使われるようになったよ！
+from ebay_scraper import scrape_ebay_newest_items, scrape_ebay_item_specs, get_browser_page
+from vision_search import find_similar_images_on_web
 from llm_namer import extract_product_name
 from amazon_scraper import search_amazon, scrape_amazon_specs
 
