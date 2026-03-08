@@ -128,7 +128,7 @@ def find_similar_images_on_web(image_uri, browser, max_results=15, force_lens=Fa
     # 2. API 0件またはエラーなら Google Lens を実行
     return search_by_google_lens(image_uri, browser)
 
-def search_global_images_by_lens(image_url, browser):
+def search_global_images_by_lens(image_url, browser, max_results=5):
     """英語商品名特定用: Google Lensで海外(英語)の類似画像を検索する"""
     print(f"[*] Google Lens (Global版) で海外の類似画像を検索中...", flush=True)
     results = []
@@ -162,7 +162,9 @@ def search_global_images_by_lens(image_url, browser):
             if len(text) > 5 and img_url_cand:
                 results.append({"page_url": href, "title": text, "snippet": "", "img_url": img_url_cand})
                 
-            if len(results) >= 30: break
+            # ▼▼▼ ここを max_results (デフォルト5) に変更！ ▼▼▼
+            if len(results) >= max_results: break
+            
         tab.close()
         print(f" -> Global版Lensで {len(results)} 件の海外候補を抽出しました。", flush=True)
     except Exception as e:
