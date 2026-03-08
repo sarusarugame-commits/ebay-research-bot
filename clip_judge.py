@@ -65,23 +65,26 @@ def rgba_to_rgb_white_bg(rgba_img):
     background.paste(rgba_img, mask=rgba_img.split()[3]) 
     return background
 
-def get_dino_embedding(image_rgb):
-    """画像をDINOv2でエンコードしてベクトルを返す"""
+def get_dino_embeddings(images_rgb):
+    """複数画像をDINOv2でまとめてエンコードしてベクトル(batch)を返す"""
     global device, dino_model
+    if not images_rgb: return None
     try:
-        img_tensor = transform(image_rgb).unsqueeze(0).to(device)
+        tensors = [transform(img) for img in images_rgb]
+        batch_tensor = torch.stack(tensors).to(device)
         with torch.no_grad():
-            embedding = dino_model(img_tensor)
-        return embedding
+            embeddings = dino_model(batch_tensor)
+        return embeddings
     except Exception as e:
         if "CUBLAS_STATUS_NOT_INITIALIZED" in str(e) and device.type == 'cuda':
             print(f"    [!] cuBLASエラーを検知しました。CPUで再試行します...")
             device = torch.device("cpu")
             dino_model = dino_model.to(device)
-            img_tensor = transform(image_rgb).unsqueeze(0).to(device)
+            tensors = [transform(img) for img in images_rgb]
+            batch_tensor = torch.stack(tensors).to(device)
             with torch.no_grad():
-                embedding = dino_model(img_tensor)
-            return embedding
+                embeddings = dino_model(batch_tensor)
+            return embeddings
         raise e
 
 def get_masked_color_score(rgba1, rgba2):
@@ -121,73 +124,90 @@ def get_masked_color_score(rgba1, rgba2):
 
 def judge_similarity(ebay_img_url, scraped_items):
     """
-    【究極完全版】
-    1. OpenCV色スコアで足切り (Color < 50 は即不採用)
-    2. DINOv2 (形状) で全件精密判定 (LightGlueは一時停止中)
+    【究極完全版 2.0】バッチ処理 (Size 5) 対応
+    1. HSV (H/S/V) ヒストグラムによるカラーゲート
+    2. DINOv2 による形状判定 (バッチ推論)
     """
     try:
         ebay_rgba = load_and_remove_bg(ebay_img_url)
         if ebay_rgba is None: return []
         
         ebay_rgb = rgba_to_rgb_white_bg(ebay_rgba)
-        ebay_emb = get_dino_embedding(ebay_rgb)
+        # eBay画像も単体でエンコードして基準とする
+        ebay_emb = get_dino_embeddings([ebay_rgb])[0].unsqueeze(0)
     except Exception as e:
         print(f"eBay画像のエンコードに失敗しました: {e}")
         return []
 
     results = []
-    print(f"    [*] {len(scraped_items)} 件の候補を精密判定中 (Color Gate: 50)...")
+    batch_size = 5
+    print(f"    [*] {len(scraped_items)} 件の候補をバッチ判定中 (Batch Size: {batch_size})...")
     
-    for i, item in enumerate(scraped_items):
-        try:
-            target_url = item.get("img_url") or (item.get("img_urls")[0] if item.get("img_urls") else None)
-            if not target_url:
-                item["score"] = 0
-                results.append(item)
-                continue
+    # 5件ずつのバッチで処理
+    for i in range(0, len(scraped_items), batch_size):
+        chunk = scraped_items[i : i + batch_size]
+        valid_chunk_data = [] # (item, rgba, rgb)
 
-            cand_rgba = load_and_remove_bg(target_url)
-            if cand_rgba is None:
-                item["score"] = 0
-                results.append(item)
-                continue
-            
-            # --- PHASE 1: COLOR GATE (OpenCV) ---
-            color_score = get_masked_color_score(ebay_rgba, cand_rgba)
-            if color_score < 50:
-                print(f"    [REJECT] Candidate {i}: Color Score too low ({color_score:.1f})")
-                item["score"] = 0
+        # --- STEP 1: ロード & カラー判定 ---
+        for item in chunk:
+            try:
+                target_url = item.get("img_url") or (item.get("img_urls")[0] if item.get("img_urls") else None)
+                if not target_url:
+                    item["score"] = 0
+                    results.append(item)
+                    continue
+
+                cand_rgba = load_and_remove_bg(target_url)
+                if cand_rgba is None:
+                    item["score"] = 0
+                    results.append(item)
+                    continue
+                
+                # カラーゲート
+                color_score = get_masked_color_score(ebay_rgba, cand_rgba)
                 item["color_score"] = color_score
+                
+                if color_score < 50:
+                    print(f"    [REJECT] Color Score too low ({color_score:.1f})")
+                    item["score"] = 0
+                    results.append(item)
+                    continue
+                
+                cand_rgb = rgba_to_rgb_white_bg(cand_rgba)
+                valid_chunk_data.append((item, cand_rgba, cand_rgb))
+                
+            except Exception as e:
+                print(f"    [!] 判定エラー (個別処理): {e}")
+                item["score"] = 0
                 results.append(item)
-                continue
 
-            # --- PHASE 2: SHAPE (DINOv2) ---
-            # 1. DINOv2
-            cand_rgb = rgba_to_rgb_white_bg(cand_rgba)
-            cand_emb = get_dino_embedding(cand_rgb)
-            sim = torch.nn.functional.cosine_similarity(ebay_emb, cand_emb).item()
-            dino_score = max(0, min(100, (sim - 0.5) * 200)) 
-            
-            # 2. LightGlue (精密判定) - 一旦コメントアウト
-            # lg_count, lg_avg_conf = verify_with_lightglue(ebay_img_url, target_url)
-            # lg_score = calculate_lightglue_score(lg_avg_conf)
-            
-            # 最終スコアブレンド: DINO 100%
-            final_score = dino_score
-            
-            print(f"    [PASS] Candidate {i}: Color={color_score:.1f} | DINO={dino_score:.1f} => Final={final_score:.1f}%")
-            
-            item["score"] = final_score
-            item["color_score"] = color_score
-            item["dino_score"] = dino_score
-            # item["lg_score"] = lg_score
-            results.append(item)
-            
-        except Exception as e:
-            print(f"    [!] 判定エラー (Candidate {i}): {e}")
-            item["score"] = 0
-            results.append(item)
-            
+        # --- STEP 2: DINOv2 バッチ推論 ---
+        if valid_chunk_data:
+            try:
+                chunk_rgbs = [data[2] for data in valid_chunk_data]
+                # バッチ5枚まとめて GPU へ！
+                chunk_embs = get_dino_embeddings(chunk_rgbs)
+                
+                # コサイン類似度を一括計算
+                for idx, (item, rgba, rgb) in enumerate(valid_chunk_data):
+                    cand_emb = chunk_embs[idx].unsqueeze(0)
+                    sim = torch.nn.functional.cosine_similarity(ebay_emb, cand_emb).item()
+                    dino_score = max(0, min(100, (sim - 0.5) * 200)) 
+                    
+                    final_score = dino_score
+                    item["score"] = final_score
+                    item["dino_score"] = dino_score
+                    
+                    color_s = item.get("color_score", 0)
+                    print(f"    [PASS] Color={color_s:.1f} | DINO={dino_score:.1f} => Final={final_score:.1f}%")
+                    results.append(item)
+                    
+            except Exception as e:
+                print(f"    [!] バッチ推論エラー: {e}")
+                for item, _, _ in valid_chunk_data:
+                    item["score"] = 0
+                    results.append(item)
+
     results.sort(key=lambda x: x.get("score", 0), reverse=True)
     return results
 
