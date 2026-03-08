@@ -1,7 +1,8 @@
 import requests
 import json
 import re
-from config import OPENROUTER_API_KEY
+import base64
+from config import OPENROUTER_API_KEY, GEMINI_API_KEY
 
 def estimate_weight_with_llm(ebay_img_url, dimensions):
     """
@@ -72,8 +73,8 @@ def analyze_item_safety_and_tariff(ebay_img_url):
 
     prompt = (
         "あなたは税関および物流の専門家です。添付された商品の画像を見て、以下の2点を判定してください。\n\n"
-        "1. 【アルコール飲料か？】ビール、ワイン、ウィスキー、日本酒などのアルコール類であれば 'true'、そうでなければ 'false'。\n"
-        "2. 【高関税素材か？】商品の主要な材質に '鉄・鋼鉄（Iron/Steel）' または '革（Leather）' が含まれるか？ 含まれるなら 'true'、そうでなければ 'false'。\n\n"
+        "1. 【アルコール製品か？】 ビール、ワイン、ウィスキー、酒類、またはアルコールを含有する製品（消毒液等含む）であれば 'true'、そうでなければ 'false'。\n"
+        "2. 【高関税素材か？】 商品の材質に '金属（Metal）' または '革（Leather）' が含まれるか？ 含まれるなら 'true'、そうでなければ 'false'。\n\n"
         "【出力形式】\n"
         "以下のJSON形式でのみ出力してください（文章は一切不要です）。\n"
         "{\"is_alcohol\": bool, \"is_high_tariff\": bool, \"material_label\": \"見つかった素材名またはnull\"}"
@@ -106,10 +107,72 @@ def analyze_item_safety_and_tariff(ebay_img_url):
                 "is_high_tariff": data.get("is_high_tariff", False),
                 "label": data.get("material_label", "なし")
             }
+        elif response.status_code == 429:
+            print(f"     [!] OpenRouter 429 Error (Rate Limit). Gemini API でリトライします...")
+            return analyze_item_safety_with_gemini(ebay_img_url, prompt)
+            
     except Exception as e:
         print(f"     [!] 安全性チェック失敗: {e}")
     
     return {"is_alcohol": False, "is_high_tariff": False, "label": "判定エラー"}
+
+def analyze_item_safety_with_gemini(ebay_img_url, prompt):
+    """
+    OpenRouterが制限にかかった際のバックアップ。
+    Gemini API を直接叩いて判定を行う。
+    """
+    if not GEMINI_API_KEY:
+        return {"is_alcohol": False, "is_high_tariff": False, "label": "Gemini APIキー未設定"}
+
+    try:
+        # 1. 画像をダウンロード
+        img_resp = requests.get(ebay_img_url, timeout=10)
+        if img_resp.status_code != 200:
+            return {"is_alcohol": False, "is_high_tariff": False, "label": "画像DL失敗(Gemini)"}
+        
+        img_data = base64.b64encode(img_resp.content).decode('utf-8')
+        mime_type = img_resp.headers.get('Content-Type', 'image/jpeg')
+
+        # 2. Gemini API 呼び出し (v1beta)
+        # 司令官の指定通り gemini-1.5-flash-lite (3.1は存在しないため1.5lite) を使用
+        model = "gemini-1.5-flash-lite"
+        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+        
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt},
+                    {
+                        "inline_data": {
+                            "mime_type": mime_type,
+                            "data": img_data
+                        }
+                    }
+                ]
+            }]
+        }
+
+        resp = requests.post(api_url, json=payload, timeout=20)
+        if resp.status_code == 200:
+            res_json = resp.json()
+            text_content = res_json['candidates'][0]['content']['parts'][0]['text'].strip()
+            
+            # JSON部分を抽出
+            json_match = re.search(r'\{.*\}', text_content, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+                return {
+                    "is_alcohol": data.get("is_alcohol", False),
+                    "is_high_tariff": data.get("is_high_tariff", False),
+                    "label": data.get("material_label", "なし")
+                }
+        else:
+            print(f"     [!] Gemini API エラー: {resp.status_code} - {resp.text}")
+
+    except Exception as e:
+        print(f"     [!] Gemini 回避判定失敗: {e}")
+
+    return {"is_alcohol": False, "is_high_tariff": False, "label": "Gemini判定エラー"}
 
 def judge_similarity_with_llm(ebay_img_url, scraped_items):
     """
