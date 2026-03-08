@@ -122,12 +122,12 @@ def find_similar_images_on_web(image_uri, browser, max_results=5, force_lens=Fal
     # 2. API 0件またはエラーなら Google Lens を実行
     return search_by_google_lens(image_uri, browser, max_results=max_results)
 
-def search_global_images_by_lens(image_url, browser, max_results=5):
-    """英語商品名特定用: Google Lensで海外(英語)の類似画像を検索する"""
-    print(f"[*] Google Lens (Global版) で海外の類似画像を検索中...", flush=True)
+def search_global_images_by_lens_fallback(image_url, browser, max_results=5):
+    """【フォールバック用】Google Lensで海外(英語)の類似画像を検索する"""
+    print(f"[*] Google Lens (Globalブラウザ版) で海外の類似画像を検索中...", flush=True)
     results = []
     try:
-        # hl=en を指定して英語圏の結果を優先！
+        # hl=en を指定して英語圏の結果を優先
         tab = browser.new_tab(f"https://www.google.com/searchbyimage?image_url={image_url}&client=app&hl=en")
         tab.wait.load_start()
         tab.wait(3) 
@@ -135,14 +135,14 @@ def search_global_images_by_lens(image_url, browser, max_results=5):
         time.sleep(2)
         
         # 弾きたい日本のドメイン
-        jp_domains = ["mercari.com/jp", "rakuten.co.jp", "yahoo.co.jp", "fril.jp", "amazon.co.jp"]
+        jp_domains = ["mercari.com", "rakuten.co.jp", "yahoo.co.jp", "fril.jp", "amazon.co.jp", ".jp/"]
         items = tab.eles('css:a.LBcIee')
         
         for item in items:
             href = item.attr('href')
             if not href: continue
             
-            # 日本のドメインを弾く (純粋な海外のeBayやフォーラムなどを狙う)
+            # 日本のドメインを弾く
             if any(domain in href for domain in jp_domains):
                 continue
                 
@@ -152,11 +152,9 @@ def search_global_images_by_lens(image_url, browser, max_results=5):
             img_ele = item.ele('tag:img', timeout=1)
             img_url_cand = img_ele.attr('src') if img_ele else ""
             
-            # 画像URLがあるものだけを抽出 (DINOv2判定に必須のため)
             if len(text) > 5 and img_url_cand:
                 results.append({"page_url": href, "title": text, "snippet": "", "img_url": img_url_cand})
                 
-            # ▼▼▼ ここを max_results (デフォルト5) に変更！ ▼▼▼
             if len(results) >= max_results: break
             
         tab.close()
@@ -164,3 +162,54 @@ def search_global_images_by_lens(image_url, browser, max_results=5):
     except Exception as e:
         print(f"[!] Global版Lens 失敗: {e}", flush=True)
     return results
+
+def search_global_images_by_lens(image_uri, browser, max_results=5):
+    """英語商品名特定用: Vision APIをメインに使い、失敗時にLensへフォールバックする"""
+    results = []
+    
+    # 1. Vision API 試行
+    if GOOGLE_APPLICATION_CREDENTIALS and os.path.exists(GOOGLE_APPLICATION_CREDENTIALS):
+        print(f"[*] Vision API (Web Detection) で海外の類似ページを検索中...", flush=True)
+        try:
+            from google.cloud import vision
+            client = vision.ImageAnnotatorClient()
+            image = vision.Image()
+            image.source.image_uri = image_uri
+            
+            # max_results=400 を指定して広範囲に検索
+            feature = vision.Feature(type_=vision.Feature.Type.WEB_DETECTION, max_results=400)
+            request = vision.AnnotateImageRequest(image=image, features=[feature])
+            response = client.batch_annotate_images(requests=[request]).responses[0]
+            
+            if response.web_detection and response.web_detection.pages_with_matching_images:
+                # 弾きたい日本のドメイン（厳密に設定）
+                jp_domains = ["mercari.com", "rakuten.co.jp", "yahoo.co.jp", "fril.jp", "amazon.co.jp", ".co.jp", ".jp"]
+                
+                for page in response.web_detection.pages_with_matching_images:
+                    url = page.url
+                    title = page.page_title
+                    
+                    # 日本のドメインが含まれているものは完全に除外する
+                    if any(domain in url for domain in jp_domains):
+                        continue
+                        
+                    # 海外サイトとして採用
+                    if len(title) > 5:
+                        results.append({"page_url": url, "title": title, "snippet": "", "img_url": ""})
+                    
+                    if len(results) >= max_results:
+                        break
+                        
+            if results:
+                print(f" -> Vision API で {len(results)} 件の海外サイト候補を抽出しました！", flush=True)
+                return results
+            else:
+                print("[*] Vision API で有効な海外サイトが見つかりませんでした。Lensに切り替えます...", flush=True)
+                
+        except Exception as e:
+            print(f"[!] Vision API 実行エラー (Lensに切り替えます): {e}", flush=True)
+    else:
+        print("[*] Vision APIの認証情報がないため、Lensでの検索を実行します...", flush=True)
+
+    # 2. Vision API で0件、またはエラーならフォールバック（ブラウザ版Lens）を実行
+    return search_global_images_by_lens_fallback(image_uri, browser, max_results)
