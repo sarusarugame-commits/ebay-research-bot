@@ -134,8 +134,8 @@ def analyze_item_safety_with_gemini(ebay_img_url, prompt):
         mime_type = img_resp.headers.get('Content-Type', 'image/jpeg')
 
         # 2. Gemini API 呼び出し (v1beta)
-        # 司令官の指定通り gemini-1.5-flash-lite (3.1は存在しないため1.5lite) を使用
-        model = "gemini-1.5-flash-lite"
+        # 司令官のご指定通り gemini-3.1-flash-lite-preview を使用！
+        model = "gemini-3.1-flash-lite-preview"
         api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
         
         payload = {
