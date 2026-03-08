@@ -150,35 +150,36 @@ def main():
         if candidate_pages:
             jp_pattern = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]')
             jp_candidates = []
+            
+            # まずはVision APIの結果から日本語候補を抽出
             for p in candidate_pages:
                 text = (p.get('title', '') + ' ' + p.get('snippet', '')).strip()
                 if jp_pattern.search(text):
                     jp_candidates.append(p)
             
-            if jp_candidates:
-                with_img = [c for c in jp_candidates if c.get('img_url')]
-                without_img = [c for c in jp_candidates if not c.get('img_url')]
-                scored_candidates = []
-                if with_img:
-                    scored_candidates = judge_similarity(img_url, with_img)
-                scored_candidates.extend(without_img)
-            else:
-                print("[!] 国内ドメインが見つかりませんでした。Google Lens で再試行...")
-                lens_pages = find_similar_images_on_web(img_url, browser, max_results=5, force_lens=True)
+            # 日本語候補が5件未満ならLensで補完する！
+            if len(jp_candidates) < 5:
+                print(f"    [*] Vision APIでの国内候補が少ないため({len(jp_candidates)}件)、Google Lens で追加検索します...")
+                lens_pages = find_similar_images_on_web(img_url, browser, max_results=10, force_lens=True)
+                
+                # 重複登録を防ぐために今のタイトルをリスト化しておく
+                existing_titles = [c.get('title', '') for c in jp_candidates]
+                
                 for p in lens_pages:
                     text = (p.get('title', '') + ' ' + p.get('snippet', '')).strip()
-                    if jp_pattern.search(text):
+                    # 日本語が含まれていて、かつ既存の候補とタイトルが被っていなければ追加！
+                    if jp_pattern.search(text) and p.get('title', '') not in existing_titles:
                         jp_candidates.append(p)
-                if jp_candidates:
-                    with_img = [c for c in jp_candidates if c.get('img_url')]
-                    without_img = [c for c in jp_candidates if not c.get('img_url')]
-                    judged_lens = []
-                    if with_img:
-                        judged_lens = judge_similarity(img_url, with_img)
-                    scored_candidates = judged_lens + without_img
 
+            # ▼▼▼ 修正：類似度判定（judge_similarity）を完全カット！そのまま採用！ ▼▼▼
+            scored_candidates = jp_candidates
+
+            if not scored_candidates:
+                print("    [!] 国内の候補が全く見つかりませんでした。")
+
+            # 寸法（dimensions）が不明な場合はテキストから推測する処理
             if raw_d == "不明":
-                for p in jp_candidates:
+                for p in scored_candidates:
                     _, d = extract_specs_from_text(p.get("title", "") + " " + p.get("snippet", ""))
                     if d != "不明": raw_d = d; break
 
