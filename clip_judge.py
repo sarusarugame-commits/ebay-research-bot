@@ -96,16 +96,23 @@ def get_masked_color_score(rgba1, rgba2):
         bgr2 = cv2.cvtColor(arr2[:, :, :3], cv2.COLOR_RGB2BGR)
         mask2 = arr2[:, :, 3]
         
+        # HSVに変換
         hsv1 = cv2.cvtColor(bgr1, cv2.COLOR_BGR2HSV)
         hsv2 = cv2.cvtColor(bgr2, cv2.COLOR_BGR2HSV)
         
-        hist1 = cv2.calcHist([hsv1], [0, 1], mask1, [50, 60], [0, 180, 0, 256])
-        hist2 = cv2.calcHist([hsv2], [0, 1], mask2, [50, 60], [0, 180, 0, 256])
+        # 色彩(H)と彩度(S)だけでなく、明度(V)も含めることで黒い商品の判定を強化！
+        # H(Hue): 0-180, S(Saturation): 0-256, V(Value): 0-256
+        # ビン数は多すぎると過学習するため、バランスを見て調整
+        hist1 = cv2.calcHist([hsv1], [0, 1, 2], mask1, [16, 16, 16], [0, 180, 0, 256, 0, 256])
+        hist2 = cv2.calcHist([hsv2], [0, 1, 2], mask2, [16, 16, 16], [0, 180, 0, 256, 0, 256])
         
         cv2.normalize(hist1, hist1, 0, 1, cv2.NORM_MINMAX)
         cv2.normalize(hist2, hist2, 0, 1, cv2.NORM_MINMAX)
         
+        # バタチャリヤ距離: 0.0=一致, 1.0=完全不一致
         distance = cv2.compareHist(hist1, hist2, cv2.HISTCMP_BHATTACHARYYA)
+        
+        # スコア化 (100点満点)
         color_score = max(0, min(100, (1.0 - distance) * 100))
         return color_score
     except Exception as e:
