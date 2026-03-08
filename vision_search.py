@@ -1,9 +1,10 @@
 import os
 import requests
 import time
+import re
 from config import GOOGLE_APPLICATION_CREDENTIALS
 
-def search_by_google_lens(image_url, browser):
+def search_by_google_lens(image_url, browser, max_results=5):
     """メインから渡されたブラウザを使用して Google Lens を実行する"""
     print(f"[*] Google Lens (ブラウザ版) で検索を開始します...", flush=True)
     results = []
@@ -35,19 +36,19 @@ def search_by_google_lens(image_url, browser):
                 if len(text) > 5:
                     results.append({"page_url": href, "title": text, "snippet": "", "img_url": img_url})
                 
-            if len(results) >= 15: break
+            if len(results) >= max_results: break
         tab.close()
         print(f" -> Google Lens で国内サイトを {len(results)} 件抽出しました。", flush=True)
     except Exception as e:
         print(f"[!] Google Lens 失敗: {e}", flush=True)
     return results
 
-def find_similar_images_on_web(image_uri, browser, max_results=15, force_lens=False):
+def find_similar_images_on_web(image_uri, browser, max_results=5, force_lens=False):
     """APIを試行し、失敗または指定があれば Lens に切り替える（ブラウザを共有）"""
     # 0. 強制 Lens モード
     if force_lens:
         print("[*] Google Lens を強制実行します...", flush=True)
-        return search_by_google_lens(image_uri, browser)
+        return search_by_google_lens(image_uri, browser, max_results=max_results)
 
     # 1. API 試行
     if GOOGLE_APPLICATION_CREDENTIALS and os.path.exists(GOOGLE_APPLICATION_CREDENTIALS):
@@ -70,8 +71,7 @@ def find_similar_images_on_web(image_uri, browser, max_results=15, force_lens=Fa
                 all_matching = list(response.web_detection.full_matching_images) + list(response.web_detection.partial_matching_images)
                 for img in all_matching:
                     for page in img.url: # ここはページURLではなく画像のソースURL
-                        pass # 実際には各ページがどの画像を持っているかの直接的な紐付けはAPIレベルでは難しいが、
-                             # pages_with_matching_images の中にある程度含まれる
+                        pass
 
                 # 国内ECサイト・マーケットプレイスを大幅に拡充
                 pref_domains = [
@@ -87,17 +87,11 @@ def find_similar_images_on_web(image_uri, browser, max_results=15, force_lens=Fa
                     "ec.line.me", "d-shopping.docomo.ne.jp", "qoo10.jp", "zara.com/jp"
                 ]
                 
-                import re
                 jp_pattern = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]')
                 excluded_domains = {}
                 excluded_examples = []
                 domain_count = 0
                 char_count = 0
-                
-                # Vision API では「どのページがどの画像URLを持っているか」の直接のリストはないが、
-                # 検索に使った画像そのものが代表的な画像URLになるため、
-                # fallback として ebay_img_url を使わずに各ドメインから画像を探すのが理想だが、
-                # ここでは暫定的に全候補を返し、後の CLIP 判定で eBay 画像と比較する
                 
                 for page in response.web_detection.pages_with_matching_images:
                     url = page.url
@@ -126,7 +120,7 @@ def find_similar_images_on_web(image_uri, browser, max_results=15, force_lens=Fa
             print(f"[!] Vision API エラー (Lensに切り替えます): {e}", flush=True)
 
     # 2. API 0件またはエラーなら Google Lens を実行
-    return search_by_google_lens(image_uri, browser)
+    return search_by_google_lens(image_uri, browser, max_results=max_results)
 
 def search_global_images_by_lens(image_url, browser, max_results=5):
     """英語商品名特定用: Google Lensで海外(英語)の類似画像を検索する"""
