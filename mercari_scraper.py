@@ -9,6 +9,9 @@ def create_browser():
     """main.py 互換: ChromiumPage を返す。"""
     co = ChromiumOptions()
     co.auto_port()
+    # 全画面起動を抑制
+    co.set_argument('--window-size=1280,720')
+    co.remove_argument('--start-maximized')
     co.headless(True)
     co.set_user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     return ChromiumPage(co)

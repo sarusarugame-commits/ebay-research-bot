@@ -6,6 +6,7 @@ import os
 import sys
 import urllib.parse
 import re
+from bs4 import BeautifulSoup
 
 # パス追加 (clip_judge を読み込むため)
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -79,80 +80,123 @@ def get_valid_shipping_cost(details):
     
     return None # 配送不可
 
-def hybrid_ebay_search(keyword, market_id="EBAY_US"):
+def api_ebay_search(keyword, market_id="EBAY_US", condition="NEW", token=None):
     """
-    1. スクレイピングで正しく並んだ候補を取得
-    2. APIでUS/UKへの配送可否と正確な送料を検証して返す
+    eBay Browse API を使用して商品候補を取得する (スクレイピングの代わり)
     """
-    is_us = (market_id == "EBAY_US")
-    domain = "ebay.com" if is_us else "ebay.co.uk"
-    safe_keyword = urllib.parse.quote_plus(keyword)
+    if not token:
+        token = get_ebay_token()
     
-    # _sop=15: Price + Shipping: lowest first, LH_ItemCondition=1000: New
-    url = f"https://www.{domain}/sch/i.html?_nkw={safe_keyword}&_sop=15&LH_ItemCondition=1000"
+    # コンディションマッピング
+    cond_filter = "itemConditions:{NEW}" if condition.upper() == "NEW" else "itemConditions:{USED|VERY_GOOD|GOOD|ACCEPTABLE}"
+    
+    url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-EBAY-C-MARKETPLACE-ID": market_id,
+        "Content-Type": "application/json"
+    }
+    params = {
+        "q": keyword,
+        "filter": cond_filter,
+        "sort": "pricePlusShipping", # 送料込み最安値順
+        "limit": 50
+    }
+    
+    print(f"    [*] eBay API検索開始 ({market_id}, {condition}): {keyword}")
+    try:
+        response = requests.get(url, headers=headers, params=params)
+        if response.status_code != 200:
+            print(f"    [!] API検索失敗 ({response.status_code}): {response.text}")
+            return []
+        
+        data = response.json()
+        items = data.get("itemSummaries", [])
+        
+        results = []
+        for itm in items:
+            img_url = itm.get("image", {}).get("imageUrl")
+            if not img_url:
+                add_imgs = itm.get("additionalImages", [])
+                if add_imgs:
+                    img_url = add_imgs[0].get("imageUrl")
+            
+            results.append({
+                "itemId": itm.get("itemId"),
+                "title": itm.get("title"),
+                "item_url": itm.get("itemWebUrl"),
+                "img_url": img_url
+            })
+        print(f"    [*] API検索完了: {len(results)} 件の候補を取得しました。")
+        return results
+    except Exception as e:
+        print(f"    [!] API検索中に例外: {e}")
+        return []
+
+def hybrid_ebay_search(keyword, market_id="EBAY_US", condition="NEW"):
+    """
+    eBayの検索結果ページをスクレイピングして候補を取得する (ハイブリッド仕様)
+    """
+    base_url = "https://www.ebay.com/sch/i.html" if market_id == "EBAY_US" else "https://www.ebay.co.uk/sch/i.html"
+    
+    # コンディションコード: 新品: 1000, 中古: 3000
+    cond_code = "1000" if condition.upper() == "NEW" else "3000"
+    
+    params = {
+        "_nkw": keyword,
+        "LH_ItemCondition": cond_code,
+        "_sop": 15, # price + shipping lowest first
+        "rt": "nc"
+    }
+    
+    search_url = f"{base_url}?{urllib.parse.urlencode(params)}"
+    print(f"    [*] eBayハイブリッド検索(SCR)開始 ({market_id}, {condition}): {search_url}")
     
     browser = get_browser_page()
     if not browser:
-        print(f"    [!] ハイブリッド検索: ブラウザが取得できません。")
-        return []
+        print("    [!] ブラウザが取得できないため、API検索にフォールバックします。")
+        return api_ebay_search(keyword, market_id, condition)
 
-    scraped_items = []
-    print(f"[*] eBay {market_id} スクレイピング開始 (URL: {url})...")
+    results = []
     try:
-        tab = browser.new_tab(url)
-        tab.get(url, timeout=20)
-        tab.wait(3) # レンダリング待ち
+        tab = browser.latest_tab
+        tab.get(search_url)
+        # 検索結果の読み込みを待機
+        tab.wait.ele_displayed('css:.s-item', timeout=10)
         
-        from bs4 import BeautifulSoup
         soup = BeautifulSoup(tab.html, 'html.parser')
-        tab.close()
+        items = soup.find_all('div', class_='s-item__wrapper') or soup.find_all('div', class_='s-item__info')
         
-        # --- ebay_scraper.py と同じ「確実な」抽出ロジック ---
-        itm_links = soup.find_all('a', href=re.compile(r'/itm/'))
-        unique_ids = set()
-        
-        for link_tag in itm_links:
-            if len(scraped_items) >= 60: break # 1ページ分（約60件）をすべて取得
+        for itm in items:
+            link_tag = itm.find('a', class_='s-item__link')
+            if not link_tag: continue
             
-            link = link_tag.get('href')
-            item_id = extract_item_id(link)
-            if not item_id or item_id in unique_ids: continue
+            url = link_tag.get('href', '')
+            item_id = extract_item_id(url)
+            if not item_id: continue
             
-            # 親要素を遡って商品コンテナを特定
-            container = None
-            p = link_tag
-            for _ in range(10):
-                p = p.parent
-                if not p: break
-                if 's-item' in p.get('class', []) or 's-card' in p.get('class', []):
-                    container = p
-                    break
+            title_tag = itm.find('div', class_='s-item__title') or itm.find('span', role='heading')
+            title = title_tag.get_text(strip=True) if title_tag else "No Title"
+            if "Shop on eBay" in title: continue
             
-            if not container: continue
-            
-            # タイトルの取得
-            title_tag = container.find(['h3', 'div', 'span'], class_=re.compile(r'title', re.I))
-            title = title_tag.get_text(strip=True) if title_tag else ""
-            if not title or "Shop on eBay" in title: continue
-            
-            # 画像の取得（Lazy Load対応）
-            img_tag = container.find('img', class_=re.compile(r'image', re.I)) or container.find('img')
+            img_tag = itm.find('img')
             img_url = ""
             if img_tag:
-                img_url = img_tag.get('data-src') or img_tag.get('src') or ""
-            
-            unique_ids.add(item_id)
-            scraped_items.append({
+                img_url = img_tag.get('src') or img_tag.get('data-src') or ""
+
+            results.append({
                 "itemId": item_id,
                 "title": title,
-                "item_url": link,
+                "item_url": url,
                 "img_url": img_url
             })
+            if len(results) >= 20: break
             
+        print(f"    [*] ハイブリッド検索完了: {len(results)} 件の候補を抽出しました。")
+        return results
     except Exception as e:
-        print(f"    [!] スクレイピング中にエラー: {e}")
-
-    return scraped_items
+        print(f"    [!] スクレイピング中にエラーが発生したため、API検索にフォールバックします: {e}")
+        return api_ebay_search(keyword, market_id, condition)
 
 def get_item_details(token, item_id, marketplace_id):
     url = f"https://api.ebay.com/buy/browse/v1/item/{item_id}"
@@ -170,17 +214,36 @@ def get_item_details(token, item_id, marketplace_id):
     return None
 
 def process_market(token, market_id, query, ref_img, condition, model_number=""):
-    print(f"\n[*] {market_id} ハイブリッド相場調査を開始します...")
+    print(f"\n[*] {market_id} ハイブリッド相場調査を開始します (Condition: {condition})...")
     
-    # 1. ハイブリッド検索 (スクレイピングで候補取得)
-    scraped_candidates = hybrid_ebay_search(query, market_id)
+    # 1. ハイブリッド検索 (スクレイピング + APIフォールバック)
+    # scraped_candidates = api_ebay_search(query, market_id, condition=condition, token=token) # API専用をコメントアウト
+    scraped_candidates = hybrid_ebay_search(query, market_id, condition=condition)
     if not scraped_candidates:
-        print(f"    [-] {market_id}: 有効な候補が見つかりませんでした。")
+        print(f"    [-] {market_id}: 有効な候補が見見つかりませんでした。")
         return []
     
+    # 画像がない商品の救済措置 (詳細APIで補完)
+    for c in scraped_candidates:
+        if not c.get("img_url"):
+            print(f"    [*] 画像が見見つからないため、詳細APIで画像を取得中... (ID: {c['itemId']})")
+            formatted_id = f"v1|{c['itemId']}|0" if "|" not in c['itemId'] else c['itemId']
+            details = get_item_details(token, formatted_id, market_id)
+            if details:
+                image = details.get("image", {})
+                c["img_url"] = image.get("imageUrl")
+                if not c["img_url"]:
+                    add_imgs = details.get("additionalImages", [])
+                    if add_imgs:
+                        c["img_url"] = add_imgs[0].get("imageUrl")
+    
+    if not scraped_candidates:
+        print(f"    [-] {market_id}: 画像のある候補が1件もありませんでした。")
+        return []
+
     # judge_similarity 用にフォーマット調整
     for c in scraped_candidates:
-        c["img_urls"] = [c["img_url"]] if c.get("img_url") else []
+        c["img_urls"] = [c["img_url"]]
 
     # 2. 画像判定 (DINOv2)
     print(f"    [*] {market_id}: {len(scraped_candidates)} 件の候補を画像判定中...")

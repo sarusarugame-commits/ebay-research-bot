@@ -39,12 +39,25 @@ except Exception as e:
     print(f"[Warn] bg_session init error: {e}")
     bg_session = None
 
-# DINOv2用の前処理 (Tensor Transform 内で 224x224 にリサイズ)
+# DINOv2用の前処理
 dino_tensor_transform = T.Compose([
-    T.Resize((224, 224), interpolation=T.InterpolationMode.LANCZOS),
     T.ToTensor(),
     T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
+
+def letterbox_transform(img, target_size=224):
+    """アスペクト比を維持してリサイズし、白背景でパディングする"""
+    w, h = img.size
+    scale = target_size / max(w, h)
+    new_w, new_h = int(w * scale), int(h * scale)
+    
+    img_resized = img.resize((new_w, new_h), Image.LANCZOS)
+    
+    new_img = Image.new("RGB", (target_size, target_size), (255, 255, 255))
+    offset_x = (target_size - new_w) // 2
+    offset_y = (target_size - new_h) // 2
+    new_img.paste(img_resized, (offset_x, offset_y))
+    return new_img
 
 # ============================================================
 # 【設定】Color Gate 閾値
@@ -53,6 +66,9 @@ COLOR_GATE_THRESHOLD = 50
 
 def load_and_remove_bg(url):
     """画像を読み込み、背景を透過する（リサイズなし、isnet-general-useモデル使用）"""
+    if not url:
+        return None
+        
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     try:
         response = requests.get(url, headers=headers, stream=True, timeout=10)
@@ -73,7 +89,8 @@ def load_and_remove_bg(url):
         print("    [Warn] rembg did not return RGBA. Using fallback.")
         return make_fallback_rgba(img)
     except Exception as e:
-        print(f"    [!] 画像ロード/背景除去エラー ({url[:50]}...): {traceback.format_exc() if 'traceback' in globals() else e}")
+        url_snippet = str(url)[:50] if url else "None"
+        print(f"    [!] 画像ロード/背景除去エラー ({url_snippet}...): {traceback.format_exc() if 'traceback' in globals() else e}")
         # 失敗時のみフォールバック
         if 'img' in locals():
             return make_fallback_rgba(img)
@@ -100,8 +117,8 @@ def get_dino_embeddings(images_rgb):
     global device, dino_model
     if not images_rgb: return None
     try:
-        # 推論用リサイズは transform 内で行う
-        tensors = [dino_tensor_transform(img) for img in images_rgb]
+        # 歪みを防ぐため、Letterbox（白背景パディング）化してからTensor変換
+        tensors = [dino_tensor_transform(letterbox_transform(img)) for img in images_rgb]
         batch_tensor = torch.stack(tensors).to(device)
         with torch.no_grad():
             embeddings = dino_model(batch_tensor)
@@ -111,7 +128,7 @@ def get_dino_embeddings(images_rgb):
             print(f"    [!] cuBLASエラーを検知しました。CPUで再試行します...")
             device = torch.device("cpu")
             dino_model = dino_model.to(device)
-            tensors = [dino_tensor_transform(img) for img in images_rgb]
+            tensors = [dino_tensor_transform(letterbox_transform(img)) for img in images_rgb]
             batch_tensor = torch.stack(tensors).to(device)
             with torch.no_grad():
                 embeddings = dino_model(batch_tensor)

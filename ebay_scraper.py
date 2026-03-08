@@ -33,6 +33,12 @@ def get_browser_page():
         except: _browser_instance = None
 
     co = ChromiumOptions().set_local_port(9222)
+    # 全画面起動を抑制し、指定サイズで起動するように設定
+    co.set_argument('--window-size=1280,720')
+    co.remove_argument('--start-maximized')
+    # ポート9222接続時は動作確認しやすくするため headless(False) ですが、全画面は防ぎます
+    co.headless(False)
+
     try:
         print("[*] ブラウザ(9222)に接続中...", flush=True)
         _browser_instance = ChromiumPage(co)

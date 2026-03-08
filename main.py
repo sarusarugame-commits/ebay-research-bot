@@ -21,7 +21,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='repla
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 print = functools.partial(print, flush=True)
 
-from config import EBAY_APP_ID, GOOGLE_APPLICATION_CREDENTIALS
+from config import EBAY_APP_ID, GOOGLE_APPLICATION_CREDENTIALS, RAKUTEN_APPLICATION_ID, RAKUTEN_ACCESS_KEY, RAKUTEN_AFFILIATE_ID, YAHOO_CLIENT_ID
 import database
 from ebay_api import get_item_details
 from mercari_scraper import search_mercari, search_rakuma, scrape_item_data
@@ -32,6 +32,7 @@ from clip_judge import judge_similarity
 from ebay_scraper import scrape_ebay_newest_items, scrape_ebay_item_specs, get_browser_page
 from vision_search import find_similar_images_on_web
 from llm_namer import extract_product_name
+from shopping_api import search_rakuten, search_yahoo, scrape_yahoo_item
 from amazon_scraper import search_amazon, search_amazon_via_google, scrape_amazon_specs
 from llm_vision_judge import verify_model_match
 
@@ -293,6 +294,8 @@ def main():
                         detail = scrape_item_data(page_url, browser_page)
                     elif platform == "駿河屋":
                         detail = scrape_surugaya_item(page_url, browser_page)
+                    elif platform == "Yahooショッピング":
+                        detail = scrape_yahoo_item(page_url, browser_page)
                     
                     if detail:
                         item.update(detail) # img_urls 等を更新
@@ -517,8 +520,38 @@ def main():
             if token:
                 print(f"[*] eBay競合検索キーワード: {final_en_name}")
                 ebay_model_number = name_data.get("model", "")
-                us_top3 = process_market(token, "EBAY_US", final_en_name, img_url, "NEW", model_number=ebay_model_number)
-                uk_top3 = process_market(token, "EBAY_GB", final_en_name, img_url, "NEW", model_number=ebay_model_number)
+                
+                # 日本で見つかった最安値商品のコンディションを判別
+                best_cond_str = str(best_item.get("condition", "")).lower()
+                # 1. 「新品」「new」が含まれているか判定
+                contains_new = "新品" in best_cond_str or "new" in best_cond_str
+                # 2. 中古を示唆するキーワードが含まれているか判定（「同様」「展示」などは新古品＝USED扱い）
+                is_used_keyword = any(k in best_cond_str for k in ["中古", "used", "2", "傷", "汚れ", "近い", "同様", "訳あり", "展示", "ランク"])
+                # 3. 「未開封」があれば新品扱いを優先
+                is_unopened = "未開封" in best_cond_str
+                
+                if is_unopened:
+                    target_cond = "NEW"
+                elif contains_new and not is_used_keyword:
+                    target_cond = "NEW"
+                else:
+                    target_cond = "USED"
+                
+                print(f"    [*] 国内最安値のコンディション: {best_item.get('condition')} -> eBay調査条件: {target_cond}")
+                
+                # US検索
+                us_top3 = process_market(token, "EBAY_US", final_en_name, img_url, target_cond, model_number=ebay_model_number)
+                # フォールバック: 新品で探していたが、結果が0件だった場合は中古で再試行
+                if target_cond == "NEW" and not us_top3:
+                    print(f"    [!] USで新品が見つからないため、中古で再検索します...")
+                    us_top3 = process_market(token, "EBAY_US", final_en_name, img_url, "USED", model_number=ebay_model_number)
+                
+                # UK検索
+                uk_top3 = process_market(token, "EBAY_GB", final_en_name, img_url, target_cond, model_number=ebay_model_number)
+                # フォールバック
+                if target_cond == "NEW" and not uk_top3:
+                    print(f"    [!] UKで新品が見つからないため、中古で再検索します...")
+                    uk_top3 = process_market(token, "EBAY_GB", final_en_name, img_url, "USED", model_number=ebay_model_number)
 
                 # ミラーリングロジック
                 if us_top3 and not uk_top3:

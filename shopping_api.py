@@ -1,4 +1,5 @@
 import requests
+import time
 from config import RAKUTEN_APPLICATION_ID, RAKUTEN_ACCESS_KEY, RAKUTEN_AFFILIATE_ID, YAHOO_CLIENT_ID
 
 def search_rakuten(keyword):
@@ -115,3 +116,33 @@ def search_yahoo(keyword):
     except Exception as e:
         print(f"[search_yahoo] Error: {e}")
     return results
+
+def scrape_yahoo_item(url, browser_page):
+    """Yahooショッピングの商品ページから詳細画像（最大5枚）を抽出する"""
+    try:
+        if not url.startswith("http"): return None
+        print(f"    [SCRAPE] Yahooショッピング詳細抽出: {url}")
+        browser_page.get(url)
+        
+        # 画像URL取得 (最大5枚)
+        # Yahooは shp.c.yimg.jp などのドメインに商品画像がある
+        img_urls = []
+        # 少し待機して読み込みを待つ
+        time.sleep(1) 
+        
+        for img in browser_page.eles('tag:img', timeout=5):
+            src = img.attr('src')
+            if src and src.startswith("http") and src not in img_urls:
+                # 商品画像っぽいドメインを優先（shp.c.yimg.jp, item-shopping.c.yimg.jp 等）
+                if "yimg.jp" in src:
+                    # アイコンやバナー（ロゴ、カート等）を弾く
+                    if any(x in src.lower() for x in ["icon", "logo", "banner", "common", "navigation", "stype"]):
+                        continue
+                    img_urls.append(src)
+            if len(img_urls) >= 5: break
+            
+        print(f"    [*] Yahoo詳細: {len(img_urls)} 枚の画像を取得しました。")
+        return {"img_urls": img_urls}
+    except Exception as e:
+        print(f"    [SCRAPE_ERROR] Yahoo詳細抽出失敗: {e}")
+        return None

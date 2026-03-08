@@ -40,8 +40,7 @@ def estimate_weight_with_llm(ebay_img_url, final_name):
                 ]
             }
         ],
-        "temperature": 0.0,
-        "response_format": {"type": "json_object"}
+        "temperature": 0.0
     }
 
     try:
@@ -49,11 +48,17 @@ def estimate_weight_with_llm(ebay_img_url, final_name):
         response = requests.post(url, headers=headers, json=payload, timeout=20)
         if response.status_code == 200:
             content = response.json()["choices"][0]["message"]["content"].strip()
-            data = json.loads(content)
-            return {
-                "weight": data.get("weight", "不明"),
-                "dimensions": data.get("dimensions", "不明")
-            }
+            # JSONを抽出してパース
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+                return {
+                    "weight": data.get("weight", "不明"),
+                    "dimensions": data.get("dimensions", "不明")
+                }
+            else:
+                print(f"    [!] JSONの抽出に失敗しました。応答内容: {content[:100]}...")
+                raise ValueError("JSON not found in response")
         else:
             print(f"    [!] OpenRouter Error ({response.status_code}): {response.text}")
             print(f"    [*] Gemini API でリトライします...")
@@ -129,8 +134,7 @@ def analyze_item_safety_and_tariff(ebay_img_url):
                 ]
             }
         ],
-        "temperature": 0.0,
-        "response_format": {"type": "json_object"}
+        "temperature": 0.0
     }
 
     try:
@@ -138,13 +142,18 @@ def analyze_item_safety_and_tariff(ebay_img_url):
         response = requests.post(url, headers=headers, json=payload, timeout=15)
         if response.status_code == 200:
             content = response.json()["choices"][0]["message"]["content"].strip()
-            # JSONをパース
-            data = json.loads(content)
-            return {
-                "is_alcohol": data.get("is_alcohol", False),
-                "is_high_tariff": data.get("is_high_tariff", False),
-                "label": data.get("material_label", "なし")
-            }
+            # JSONを抽出してパース
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+                return {
+                    "is_alcohol": data.get("is_alcohol", False),
+                    "is_high_tariff": data.get("is_high_tariff", False),
+                    "label": data.get("material_label", "なし")
+                }
+            else:
+                print(f"    [!] JSONの抽出に失敗しました。応答内容: {content[:100]}...")
+                raise ValueError("JSON not found in response")
         else:
             print(f"     [!] OpenRouter Error ({response.status_code}): {response.text}")
             print(f"     [*] Gemini API でリトライします...")
@@ -387,8 +396,7 @@ def verify_model_match(ref_img_url, candidate_img_url, model_number):
                 {"type": "image_url", "image_url": {"url": candidate_img_url}}
             ]
         }],
-        "temperature": 0.0,
-        "response_format": {"type": "json_object"}
+        "temperature": 0.0
     }
 
     try:
