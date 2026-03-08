@@ -121,12 +121,11 @@ def process_market(token, market_id, query, ref_img, condition):
     if not top_matches: return []
     
     top_matches.sort(key=lambda x: x["score"], reverse=True)
-    best_5 = top_matches[:5]
     
     final_candidates = []
-    print(f"    [*] {market_id}: 上位 {len(best_5)} 件の詳細情報を取得して送料を確定中...")
+    print(f"    [*] {market_id}: {len(top_matches)} 件の候補の詳細情報を取得して送料を確定中...")
     
-    for m in best_5:
+    for m in top_matches:
         item_id = m.get("itemId")
         print(f"      [DEBUG] Detail Fetching for {item_id}...")
         details = get_item_details(token, item_id, market_id)
@@ -190,7 +189,7 @@ def process_market(token, market_id, query, ref_img, condition):
         final_candidates.append(m)
 
     final_candidates.sort(key=lambda x: x["total_usd"])
-    return final_candidates[:3]
+    return final_candidates
 
 def run_test():
     QUERY = "CASIO Oceanus OCW-S6000"
@@ -211,7 +210,7 @@ def run_test():
         us_top3 = uk_top3.copy()
 
     print("\n" + "="*70)
-    print("   eBay Global Highest & Best Results (Top 3 Each)")
+    print("   eBay Global Highest & Best Results (All Matches)")
     print("="*70)
     
     results = {"US": us_top3, "UK": uk_top3}
