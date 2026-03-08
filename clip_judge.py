@@ -167,8 +167,10 @@ def judge_similarity(ebay_img_url, scraped_items):
                 color_score = get_masked_color_score(ebay_rgba, cand_rgba)
                 item["color_score"] = color_score
                 
+                item_url = item.get("item_affiliate_web_url") or item.get("page_url") or "No URL"
                 if color_score < 50:
                     print(f"    [REJECT] Color Score too low ({color_score:.1f})")
+                    print(f"    [-] URL: {item_url}")
                     item["score"] = 0
                     results.append(item)
                     continue
@@ -199,7 +201,9 @@ def judge_similarity(ebay_img_url, scraped_items):
                     item["dino_score"] = dino_score
                     
                     color_s = item.get("color_score", 0)
+                    item_url = item.get("item_affiliate_web_url") or item.get("page_url") or "No URL"
                     print(f"    [PASS] Color={color_s:.1f} | DINO={dino_score:.1f} => Final={final_score:.1f}%")
+                    print(f"    [+] URL: {item_url}")
                     results.append(item)
                     
             except Exception as e:
