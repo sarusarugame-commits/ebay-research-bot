@@ -88,7 +88,10 @@ def get_dino_embeddings(images_rgb):
         raise e
 
 def get_masked_color_score(rgba1, rgba2):
-    """背景を完全に無視して、被写体の「色」だけで類似度を計算する！"""
+    """
+    照明変動に強く、かつ黒い商品も判定できるハイブリッド式！
+    HS (色味) 70% + V (明るさ) 30% の重み付けで計算。
+    """
     try:
         arr1 = np.array(rgba1)
         arr2 = np.array(rgba2)
@@ -103,20 +106,27 @@ def get_masked_color_score(rgba1, rgba2):
         hsv1 = cv2.cvtColor(bgr1, cv2.COLOR_BGR2HSV)
         hsv2 = cv2.cvtColor(bgr2, cv2.COLOR_BGR2HSV)
         
-        # 色彩(H)と彩度(S)だけでなく、明度(V)も含めることで黒い商品の判定を強化！
-        # H(Hue): 0-180, S(Saturation): 0-256, V(Value): 0-256
-        # ビン数は多すぎると過学習するため、バランスを見て調整
-        hist1 = cv2.calcHist([hsv1], [0, 1, 2], mask1, [16, 16, 16], [0, 180, 0, 256, 0, 256])
-        hist2 = cv2.calcHist([hsv2], [0, 1, 2], mask2, [16, 16, 16], [0, 180, 0, 256, 0, 256])
+        # 1. HSヒストグラム (色彩と彩度) - 照明に強い
+        # H:18, S:8 ビンで色味をしっかり捉える
+        hist_hs1 = cv2.calcHist([hsv1], [0, 1], mask1, [18, 8], [0, 180, 0, 256])
+        hist_hs2 = cv2.calcHist([hsv2], [0, 1], mask2, [18, 8], [0, 180, 0, 256])
+        cv2.normalize(hist_hs1, hist_hs1, 0, 1, cv2.NORM_MINMAX)
+        cv2.normalize(hist_hs2, hist_hs2, 0, 1, cv2.NORM_MINMAX)
+        dist_hs = cv2.compareHist(hist_hs1, hist_hs2, cv2.HISTCMP_BHATTACHARYYA)
+
+        # 2. Vヒストグラム (明るさ) - 黒い商品の識別に必要
+        # 明度は 8ビン (粗め) にして、影などの細かい変動を無視する
+        hist_v1 = cv2.calcHist([hsv1], [2], mask1, [8], [0, 256])
+        hist_v2 = cv2.calcHist([hsv2], [2], mask2, [8], [0, 256])
+        cv2.normalize(hist_v1, hist_v1, 0, 1, cv2.NORM_MINMAX)
+        cv2.normalize(hist_v2, hist_v2, 0, 1, cv2.NORM_MINMAX)
+        dist_v = cv2.compareHist(hist_v1, hist_v2, cv2.HISTCMP_BHATTACHARYYA)
         
-        cv2.normalize(hist1, hist1, 0, 1, cv2.NORM_MINMAX)
-        cv2.normalize(hist2, hist2, 0, 1, cv2.NORM_MINMAX)
-        
-        # バタチャリヤ距離: 0.0=一致, 1.0=完全不一致
-        distance = cv2.compareHist(hist1, hist2, cv2.HISTCMP_BHATTACHARYYA)
+        # 3. 合成距離 (HS:V = 0.7:0.3)
+        final_dist = (dist_hs * 0.7) + (dist_v * 0.3)
         
         # スコア化 (100点満点)
-        color_score = max(0, min(100, (1.0 - distance) * 100))
+        color_score = max(0, min(100, (1.0 - final_dist) * 100))
         return color_score
     except Exception as e:
         print(f"    [!] 色計算エラー: {e}")
