@@ -168,18 +168,11 @@ def extract_english_product_name(ebay_title, scored_candidates):
                 keywords = data.get("keywords", "").strip()
                 
                 full_name = f"{brand} {series} {model} {keywords}".strip().replace("  ", " ")
-                search_query = f"{brand} {model}".strip().replace("  ", " ")
-                print(f"    - 抽出成功: {full_name} (リサーチクエリ: {search_query})")
-                return {
-                    "brand": brand, "series": series, "model": model, "keywords": keywords, 
-                    "full_name": full_name, "search_query": search_query
-                }
+                print(f"    - 抽出成功: {full_name}")
+                return {"brand": brand, "series": series, "model": model, "keywords": keywords, "full_name": full_name}
                 
     # 全て失敗時のフォールバック
     words = ebay_title.split()
     model_candidate = next((w for w in words if any(c.isdigit() for c in w) and len(w) > 4), "")
     fallback_name = f"{words[0]} {model_candidate}".strip()
-    return {
-        "brand": words[0], "series": "", "model": model_candidate, "keywords": "", 
-        "full_name": fallback_name, "search_query": fallback_name
-    }
+    return {"brand": words[0], "series": "", "model": model_candidate, "keywords": "", "full_name": fallback_name}

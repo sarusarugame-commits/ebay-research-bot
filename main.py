@@ -211,14 +211,10 @@ def main():
             
             en_name_data = extract_english_product_name(target_item.get('title'), top_en_matches)
             final_en_name = en_name_data.get("full_name", target_item.get('title'))
-            # 検索用には「ブランド + 型番」のシンプルなクエリを使用する
-            search_query_en = en_name_data.get("search_query", final_en_name)
         else:
             print("    [!] 海外候補が取得できませんでした。元のタイトルを使用します。")
-            search_query_en = target_item.get('title')
             
         print(f" -> 最終確定した英語名: {final_en_name}")
-        print(f" -> eBay検索用クエリ: {search_query_en}")
         # ==========================================
 
         # デバッグ画像用フォルダの作成
@@ -430,9 +426,9 @@ def main():
             
             token = get_ebay_token()
             if token:
-                print(f"[*] eBay競合検索キーワード: {search_query_en}")
-                us_top3 = process_market(token, "EBAY_US", search_query_en, img_url, "NEW")
-                uk_top3 = process_market(token, "EBAY_GB", search_query_en, img_url, "NEW")
+                print(f"[*] eBay競合検索キーワード: {final_en_name}")
+                us_top3 = process_market(token, "EBAY_US", final_en_name, img_url, "NEW")
+                uk_top3 = process_market(token, "EBAY_GB", final_en_name, img_url, "NEW")
 
                 # ミラーリングロジック
                 if us_top3 and not uk_top3:
