@@ -117,7 +117,15 @@ def main():
         print("-" * 50)
         
         # 1.5 安全性・関税チェック (Gemma 3 Vision)
+        print("\n[*] Gemma 3 が商品の安全性をチェックしています（アルコール/高関税素材）...")
         safety_data = analyze_item_safety_and_tariff(target_item.get('image_url'))
+        
+        # 判定結果の表示
+        print(f"    - アルコール判定: {'あり (⚠️ SKIP)' if safety_data.get('is_alcohol') else 'なし'}")
+        print(f"    - 高関税素材判定: {'あり (⚠️ ATTENTION)' if safety_data.get('is_high_tariff') else 'なし'}")
+        if safety_data.get('label'):
+            print(f"    - 検出された素材: {safety_data.get('label')}")
+
         if safety_data.get("is_alcohol"):
             print(f"\n[⚠️ SKIP] アルコール飲料が検出されました。ガイドラインによりこの商品はスキップします。")
             database.mark_as_researched(item_id, weight="SKIPPED", dimensions="ALCOHOL")
