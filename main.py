@@ -145,7 +145,7 @@ def main():
 
         # 2. 画像検索
         print("\n[*] Google Vision API / Lens を使用して類似画像を検索中...")
-        candidate_pages = find_similar_images_on_web(img_url, browser, max_results=15)
+        candidate_pages = find_similar_images_on_web(img_url, browser, max_results=5)
         
         scored_candidates = []
         if candidate_pages:
@@ -366,19 +366,19 @@ def main():
             # メルカリ
             browser = get_fresh_browser()
             log_search("メルカリ")
-            m_res = search_mercari(search_query, browser, max_results=15)
+            m_res = search_mercari(search_query, browser, max_results=5)
             process_candidates(m_res, "メルカリ")
 
             # ラクマ
             browser = get_fresh_browser()
             log_search("ラクマ")
-            r_res = search_rakuma(search_query, browser, max_results=10)
+            r_res = search_rakuma(search_query, browser, max_results=5)
             process_candidates(r_res, "ラクマ")
 
             # 駿河屋
             browser = get_fresh_browser()
             log_search("駿河屋")
-            s_res = search_surugaya(search_query, browser, max_results=10)
+            s_res = search_surugaya(search_query, browser, max_results=5)
             process_candidates(s_res, "駿河屋")
 
             from shopping_api import search_rakuten
