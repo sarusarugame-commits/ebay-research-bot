@@ -228,6 +228,7 @@ def main():
 
             search_keywords = [normalize_text(k) for k in re.split(r'[\s　]+', filter_text) if len(k) > 1]
             model_name = normalize_text(name_data.get('model', ''))
+            series_name = normalize_text(name_data.get('series', ''))
 
             def process_candidates(candidates, platform):
                 nonlocal tentative_best_price, tentative_best_item, weight_final, dims_final
@@ -238,18 +239,24 @@ def main():
 
                 print(f"[*] {platform}: {len(candidates)} 件の候補を詳細判定中 (基準: 加重平均 73%以上)")
                 
-                # 1. キーワードフィルタリング
-                threshold = max(1, len(search_keywords) // 2)
+                # 1. 商品名・型番判定 (厳格化)
                 keyword_filtered = []
                 for item in candidates:
                     title_norm = normalize_text(item.get("title", ""))
-                    num_matches = sum(1 for k in search_keywords if k in title_norm)
-                    has_model = model_name in title_norm if len(model_name) > 3 else False
                     
-                    if has_model or num_matches >= threshold:
+                    # 型番または商品名（シリーズ名）が含まれているかをチェック
+                    # 型番は3文字以上、シリーズ名は2文字以上を有効とする
+                    has_model = (model_name in title_norm) if len(model_name) >= 3 else False
+                    has_series = (series_name in title_norm) if len(series_name) >= 2 else False
+                    
+                    if has_model or has_series:
                         keyword_filtered.append(item)
                     else:
-                        print(f"    [SKIP] キーワード不足 ({num_matches}/{threshold}): {item.get('title')[:30]}...")
+                        reasons = []
+                        if len(model_name) >= 3: reasons.append(f"型番({model_name})不一致")
+                        if len(series_name) >= 2: reasons.append(f"商品名({series_name})不一致")
+                        reason_str = " / ".join(reasons) if reasons else "特定識別子なし"
+                        print(f"    [SKIP] {reason_str}: {item.get('title')[:30]}...")
                 
                 if not keyword_filtered:
                     print(f"    [!] キーワード条件に満たないため、全件を画像判定へ回します。")
