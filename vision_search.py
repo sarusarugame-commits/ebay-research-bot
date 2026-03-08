@@ -105,7 +105,8 @@ def find_similar_images_on_web(image_uri, browser, max_results=5, force_lens=Fal
         print(f"[*] 国内候補が {max_results} 件に満たないため、Google Lens (ブラウザ版) で残り {needed} 件を補填検索します...", flush=True)
         
         try:
-            lens_res = search_by_google_lens(image_uri, browser, max_results=max_results + 5)
+            # ブラウザ側でも max_results をきっちり守らせる
+            lens_res = search_by_google_lens(image_uri, browser, max_results=max_results)
             existing_urls = {r["page_url"] for r in results}
             
             added = 0
@@ -120,7 +121,7 @@ def find_similar_images_on_web(image_uri, browser, max_results=5, force_lens=Fal
         except Exception as e:
             print(f"[!] Lens補填検索 失敗: {e}", flush=True)
 
-    return results
+    return results[:max_results] # 念のためスライス
 
 def search_global_images_by_lens(image_uri, browser, max_results=5):
     """【海外用】Vision APIをメインに使い、足りない分をLensで補填する"""
@@ -199,4 +200,4 @@ def search_global_images_by_lens(image_uri, browser, max_results=5):
         except Exception as e:
             print(f"[!] Lens補填検索 失敗: {e}", flush=True)
             
-    return results
+    return results[:max_results] # 念のためスライス

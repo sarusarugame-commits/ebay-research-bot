@@ -157,22 +157,8 @@ def main():
                 if jp_pattern.search(text):
                     jp_candidates.append(p)
             
-            # 日本語候補が5件未満ならLensで補完する！
-            if len(jp_candidates) < 5:
-                print(f"    [*] Vision APIでの国内候補が少ないため({len(jp_candidates)}件)、Google Lens で追加検索します...")
-                lens_pages = find_similar_images_on_web(img_url, browser, max_results=10, force_lens=True)
-                
-                # 重複登録を防ぐために今のタイトルをリスト化しておく
-                existing_titles = [c.get('title', '') for c in jp_candidates]
-                
-                for p in lens_pages:
-                    text = (p.get('title', '') + ' ' + p.get('snippet', '')).strip()
-                    # 日本語が含まれていて、かつ既存の候補とタイトルが被っていなければ追加！
-                    if jp_pattern.search(text) and p.get('title', '') not in existing_titles:
-                        jp_candidates.append(p)
-
-            # ▼▼▼ 修正：類似度判定（judge_similarity）を完全カット！そのまま採用！ ▼▼▼
-            scored_candidates = jp_candidates
+            # 日本語候補を抽出 (すでに行われているはずだが、念のため正規化)
+            scored_candidates = jp_candidates[:5]
 
             if not scored_candidates:
                 print("    [!] 国内の候補が全く見つかりませんでした。")
