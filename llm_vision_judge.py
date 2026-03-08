@@ -54,13 +54,14 @@ def estimate_weight_with_llm(ebay_img_url, final_name):
                 "weight": data.get("weight", "不明"),
                 "dimensions": data.get("dimensions", "不明")
             }
-        elif response.status_code == 429:
-            print(f"    [!] OpenRouter 429 Error (Spec). Gemini API でリトライします...")
+        else:
+            print(f"    [!] OpenRouter Error ({response.status_code}): {response.text}")
+            print(f"    [*] Gemini API でリトライします...")
             return estimate_weight_with_gemini(ebay_img_url, final_name, prompt)
     except Exception as e:
-        print(f"[Error] スペック推論失敗: {e}")
-    
-    return {"weight": "不明", "dimensions": "不明"}
+        print(f"    [!] スペック推論中に例外発生: {e}")
+        print(f"    [*] Gemini API でリトライします...")
+        return estimate_weight_with_gemini(ebay_img_url, final_name, prompt)
 
 def estimate_weight_with_gemini(ebay_img_url, final_name, prompt):
     """スペック推論のGeminiフォールバック"""
@@ -144,14 +145,15 @@ def analyze_item_safety_and_tariff(ebay_img_url):
                 "is_high_tariff": data.get("is_high_tariff", False),
                 "label": data.get("material_label", "なし")
             }
-        elif response.status_code == 429:
-            print(f"     [!] OpenRouter 429 Error (Rate Limit). Gemini API でリトライします...")
+        else:
+            print(f"     [!] OpenRouter Error ({response.status_code}): {response.text}")
+            print(f"     [*] Gemini API でリトライします...")
             return analyze_item_safety_with_gemini(ebay_img_url, prompt)
             
     except Exception as e:
-        print(f"     [!] 安全性チェック失敗: {e}")
-    
-    return {"is_alcohol": False, "is_high_tariff": False, "label": "判定エラー"}
+        print(f"     [!] 安全性チェック中に例外発生: {e}")
+        print(f"     [*] Gemini API でリトライします...")
+        return analyze_item_safety_with_gemini(ebay_img_url, prompt)
 
 def analyze_item_safety_with_gemini(ebay_img_url, prompt):
     """
@@ -403,18 +405,17 @@ def verify_model_match(ref_img_url, candidate_img_url, model_number):
                 label = "✅ 一致" if result else "❌ 不一致"
                 print(f"    [LLM] {label} | 理由: {reason}")
                 return bool(result)
-
-        elif resp.status_code == 429:
-            print(f"    [LLM] OpenRouter 429 → Gemini APIでリトライ...")
-            return _verify_model_match_with_gemini(ref_img_url, candidate_img_url, prompt)
+            return True # JSONパース失敗時は通過
 
         else:
-            print(f"    [LLM] エラー ({resp.status_code}) → 通過扱いにします")
-            return True
+            print(f"    [LLM] OpenRouter Error ({resp.status_code}) 詳細: {resp.text}")
+            print(f"    [*] Gemini API でリトライします...")
+            return _verify_model_match_with_gemini(ref_img_url, candidate_img_url, prompt)
 
     except Exception as e:
-        print(f"    [LLM] 型番判定例外: {e} → 通過扱いにします")
-        return True
+        print(f"    [LLM] 型番判定中に例外発生: {e}")
+        print(f"    [*] Gemini API でリトライします...")
+        return _verify_model_match_with_gemini(ref_img_url, candidate_img_url, prompt)
 
 
 def _verify_model_match_with_gemini(ref_img_url, candidate_img_url, prompt):

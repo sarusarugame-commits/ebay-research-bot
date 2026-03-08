@@ -20,6 +20,13 @@ def get_word_frequencies(titles):
     freq_list = {w: counts[w] for w in counts if counts[w] >= 2}
     return freq_list
 
+def log_frequent_words(freq_data, label):
+    """頻出単語の上位10個をログに出力する"""
+    if freq_data:
+        sorted_freq = sorted(freq_data.items(), key=lambda x: x[1], reverse=True)
+        freq_str = ", ".join([f"{w}({c})" for w, c in sorted_freq[:10]])
+        print(f"    [*] {label}頻出単語 (Top 10): {freq_str}")
+
 def call_llm_api(model_id, prompt, response_format=None):
     """OpenRouter APIを呼び出す共通関数"""
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -72,6 +79,7 @@ def extract_product_name(ebay_title, scored_candidates):
     # 1. 頻出単語をカウント
     titles = [c['title'] for c in scored_candidates if c.get('title')]
     freq_data = get_word_frequencies(titles)
+    log_frequent_words(freq_data, "国内タイトル")
     
     # プロンプト作成
     prompt = (
@@ -135,6 +143,7 @@ def extract_english_product_name(ebay_title, scored_candidates):
         
     titles = [c['title'] for c in scored_candidates if c.get('title')]
     freq_data = get_word_frequencies(titles)
+    log_frequent_words(freq_data, "海外タイトル")
     
     prompt = (
         "あなたはプロのEC商品アナリストです。以下の情報を分析し、"

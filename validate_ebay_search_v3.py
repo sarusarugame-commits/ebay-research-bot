@@ -48,7 +48,8 @@ def search_ebay_market(token, keywords, marketplace_id, condition_str="NEW"):
     params = {
         "q": keywords,
         "limit": 60,
-        "filter": f"conditions:{{{condition_str.upper()}}}"
+        "filter": f"conditions:{{{condition_str.upper()}}}",
+        "sort": "price"  # 価格と送料の合計が安い順にソート
     }
     print(f"[*] eBay {marketplace_id} 検索中... ({condition_str})")
     try:
