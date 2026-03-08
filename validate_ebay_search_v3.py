@@ -189,7 +189,7 @@ def process_market(token, market_id, query, ref_img, condition):
         final_candidates.append(m)
 
     final_candidates.sort(key=lambda x: x["total_usd"])
-    return final_candidates
+    return final_candidates[:3]
 
 def run_test():
     QUERY = "CASIO Oceanus OCW-S6000"
@@ -210,7 +210,7 @@ def run_test():
         us_top3 = uk_top3.copy()
 
     print("\n" + "="*70)
-    print("   eBay Global Highest & Best Results (All Matches)")
+    print("   eBay Global Highest & Best Results (Top 3 Each)")
     print("="*70)
     
     results = {"US": us_top3, "UK": uk_top3}
