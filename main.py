@@ -46,20 +46,30 @@ def extract_specs_from_text(text):
 
 def adjust_dimensions(dims_str):
     if dims_str == "不明": return "不明"
+    is_mm = "mm" in dims_str.lower()
     nums = re.findall(r"(\d+(\.\d+)?)", dims_str)
     if len(nums) >= 3:
-        d1, d2, d3 = int(float(nums[0][0]) + 2), int(float(nums[1][0]) + 2), int(float(nums[2][0]) + 1)
-        unit = "mm" if "mm" in dims_str.lower() else "cm"
-        return f"{d1}x{d2}x{d3} {unit}"
+        d1, d2, d3 = float(nums[0][0]), float(nums[1][0]), float(nums[2][0])
+        # mmに統一
+        if not is_mm:
+            d1 *= 10; d2 *= 10; d3 *= 10
+        # バッファ追加 (+20, +20, +10)
+        d1, d2, d3 = int(d1 + 20), int(d2 + 20), int(d3 + 10)
+        return f"{d1}x{d2}x{d3}mm"
     return dims_str
 
 def truncate_weight(weight_str):
     if weight_str == "不明": return "不明"
+    is_kg = "kg" in weight_str.lower() or "キロ" in weight_str
     nums = re.findall(r"(\d+(\.\d+)?)", weight_str)
     if nums:
-        val = int(float(nums[0][0]))
-        unit = "kg" if "kg" in weight_str.lower() or "キロ" in weight_str else "g"
-        return f"{val}{unit}"
+        val = float(nums[0][0])
+        # gに統一
+        if is_kg:
+            val *= 1000
+        # バッファ追加 (+100g)
+        val = int(val + 100)
+        return f"{val}g"
     return weight_str
 
 def save_debug_image(url, folder, filename):
@@ -227,7 +237,8 @@ def main():
             def normalize_text(text):
                 return unicodedata.normalize('NFKC', text).lower()
 
-            search_keywords = [normalize_text(k) for k in re.split(r'[\s　]+', filter_text) if len(k) > 1]
+            search_keywords = [normalize_text(k) for k in re.split(r'\s+', filter_text) if len(k) > 1]
+    # 全角スペースを含む空白文字全般で分割するよう \s に統一
             model_name = normalize_text(name_data.get('model', ''))
             series_name = normalize_text(name_data.get('series', ''))
 
@@ -347,21 +358,33 @@ def main():
                     
                     final_candidates.append(item)
 
-            def get_fresh_browser():
-                nonlocal browser
-                try:
-                    # 司令官流！ latest_tab に触れるかどうかで生存確認するよ！
-                    if not browser:
-                        print("    [*] ブラウザを新規起動します...")
-                        browser = get_browser_page()
-                    else:
-                        print("    [*] ブラウザの生存確認中...", end=" ", flush=True)
-                        _ = browser.latest_tab  # これでエラーが出なければブラウザは元気！
-                        print("OK")
-                except Exception:
-                    print("[!] ブラウザの状態異常を検知したため、再起動します...")
+        def get_fresh_browser():
+            nonlocal browser
+            try:
+                if not browser:
+                    print("    [*] ブラウザを新規起動します...")
                     browser = get_browser_page()
-                return browser
+                else:
+                    print("    [*] ブラウザの生存確認中...", end=" ", flush=True)
+                    _ = browser.latest_tab
+                    print("OK")
+            except Exception:
+                print("[!] ブラウザの状態異常を検知したため、再起動します...")
+                browser = get_browser_page()
+            return browser
+
+        if final_name and final_name != "特定不能":
+            brand_model = f"{name_data.get('brand', '')} {name_data.get('model', '')}".strip()
+            search_query = brand_model if len(brand_model) > 5 else final_name
+            
+            filter_text = f"{name_data.get('series', '')} {name_data.get('model', '')} {name_data.get('keywords', '')}".strip()
+            import unicodedata
+            def normalize_text(text):
+                return unicodedata.normalize('NFKC', text).lower()
+
+            search_keywords = [normalize_text(k) for k in re.split(r'\s+', filter_text) if len(k) > 1]
+            model_name = normalize_text(name_data.get('model', ''))
+            series_name = normalize_text(name_data.get('series', ''))
 
             print(f"\n[*] 国内5大プラットフォームを順次調査開始...")
             
@@ -397,55 +420,46 @@ def main():
         if weight_final == "不明" and raw_w != "不明": weight_final = truncate_weight(raw_w)
         if dims_final == "不明" and raw_d != "不明": dims_final = adjust_dimensions(raw_d)
 
-        # 5. 【最終補完】Amazonからのスペック抽出（重量/サイズが不明の場合のみ）
+        # 5. 【最終補完】スペック情報（重量/サイズ）の補完
         if weight_final == "不明" or dims_final == "不明":
-            print("\n[*] 重量またはサイズが不明なため、Amazonからスペック情報を最終補完中...")
+            # --- STEP 5.1: Amazon からの補完 ---
+            print("\n[*] 重量またはサイズが不明なため、Amazonからスペック情報を補完中...")
             try:
                 browser = get_fresh_browser()
-                # 型番がない商品も考慮し、AIが特定した日本語の商品名（またはeBayタイトル）で検索
                 amz_search_query = final_name if final_name != "特定不能" else target_item.get('title')
-                print(f"    [*] Amazon検索クエリ: {amz_search_query}")
                 amz_results = search_amazon(amz_search_query, browser, max_results=5)
                 
                 if not amz_results:
-                    print("    [*] Amazon内検索でヒットしなかったため、Google経由で補填検索中...")
                     amz_results = search_amazon_via_google(amz_search_query, browser, max_results=3)
                 
                 if amz_results:
-                    print(f"    [*] Amazon候補 {len(amz_results)} 件を画像判定中...")
-                    
-                    # ✅ 修正：judge_similarity に渡す前に page_url を明示的に保持するリストを作る
                     amz_for_judge = [{"img_url": r.get("img_url", ""), "page_url": r.get("page_url", ""), "_orig": r} 
                                      for r in amz_results if r.get("img_url")]
-                    
                     amz_judged = judge_similarity(img_url, amz_for_judge)
                     
-                    # ✅ 修正ポイント: amz_judgedが空でないか、かつ[0]がNoneでないかチェック
                     if amz_judged and amz_judged[0] is not None and amz_judged[0].get("score", 0) >= 70:
                         best_amz = amz_judged[0]
-                        # page_urlを直接取得、または_origから取得（二重保険）
                         amz_url = best_amz.get("page_url") or best_amz.get("_orig", {}).get("page_url")
-                        
-                        if not amz_url:
-                            print("    [-] Amazon一致商品のURLが取得できませんでした。スキップします。")
-                        else:
-                            print(f"    [MATCH] Amazonで一致商品を発見 (Score: {best_amz['score']:.1f}%). 詳細解析中...")
-                            try:
-                                amz_specs = scrape_amazon_specs(amz_url, browser)
-                                if weight_final == "不明" and amz_specs.get("weight") != "不明":
-                                    weight_final = truncate_weight(amz_specs["weight"])
-                                    print(f"    -> 重量補完: {weight_final}")
-                                if dims_final == "不明" and amz_specs.get("dimensions") != "不明":
-                                    dims_final = adjust_dimensions(amz_specs["dimensions"])
-                                    print(f"    -> サイズ補完: {dims_final}")
-                            except Exception as e:
-                                print(f"    [!] Amazonスペック取得中にエラー: {e}")
-                    else:
-                        print("    [-] Amazon候補のスコアが基準未満のため、スペック補完をスキップします。")
-                else:
-                    print("    [-] Amazon候補が見つかりませんでした。")
+                        if amz_url:
+                            print(f"    [MATCH] Amazonで一致商品を発見 (Score: {best_amz['score']:.1f}%).")
+                            amz_specs = scrape_amazon_specs(amz_url, browser)
+                            if weight_final == "不明" and amz_specs.get("weight") != "不明":
+                                weight_final = truncate_weight(amz_specs["weight"])
+                            if dims_final == "不明" and amz_specs.get("dimensions") != "不明":
+                                dims_final = adjust_dimensions(amz_specs["dimensions"])
             except Exception as e:
-                print(f"    [!] Amazonスペック補填処理全体でエラー: {e}")
+                print(f"    [!] Amazonスペック補完中にエラー: {e}")
+
+            # --- STEP 5.2: Amazonでも不明な場合の LLM(Gemma) 推定 ---
+            if weight_final == "不明" or dims_final == "不明":
+                print("\n[*] Amazonでも判明しなかったため、LLM(画像)による重量・サイズ推定を実行します...")
+                try:
+                    llm_estimated = estimate_weight_with_llm(img_url, final_name)
+                    if llm_estimated:
+                        if weight_final == "不明": weight_final = llm_estimated.get("weight", "不明")
+                        if dims_final == "不明": dims_final = llm_estimated.get("dimensions", "不明")
+                except Exception as e:
+                    print(f"    [!] LLM推定処理でエラー: {e}")
 
         best_item = tentative_best_item
 

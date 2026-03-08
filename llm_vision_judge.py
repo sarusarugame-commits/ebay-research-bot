@@ -4,13 +4,12 @@ import re
 import base64
 from config import OPENROUTER_API_KEY, GEMINI_API_KEY
 
-def estimate_weight_with_llm(ebay_img_url, dimensions):
+def estimate_weight_with_llm(ebay_img_url, final_name):
     """
-    Gemma 3 (Vision) を用いて、商品の見た目とサイズ情報から重量(kg)を推論する。
-    梱包バッファ(0.5kg)を自動的に加算して返す。
+    Gemma 3 (Vision) を用いて、商品の見た目と名称から「重量(kg)」と「サイズ(cm)」を推論する。
     """
     if not OPENROUTER_API_KEY:
-        return "不明"
+        return {"weight": "不明", "dimensions": "不明"}
         
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
@@ -19,13 +18,15 @@ def estimate_weight_with_llm(ebay_img_url, dimensions):
     }
 
     prompt = (
-        f"あなたはプロの物流・梱包エキスパートです。添付された商品の画像と、判明しているサイズ情報（{dimensions}）を元に、この商品の重量を推論してください。\n\n"
+        f"あなたはプロの物流・梱包エキスパートです。添付された商品の画像と商品名（{final_name}）を元に、この商品の重量とサイズを推論してください。\n\n"
         "【推論のステップ】\n"
-        "1. 画像から商品の材質（金属、プラスチック、ガラス等）と密度を推測する。\n"
-        f"2. サイズ（{dimensions}）から体積を計算し、中身の正味重量（Net Weight）をkg単位で算出する。\n"
-        "3. 国際発送用の梱包材（ダンボール、緩衝材）の重さとして、さらに 0.5kg を加算する。\n\n"
+        "1. 画像と商品名から商品の材質（金属、プラスチック、木材等）と一般的なサイズ感を特定する。\n"
+        "2. 外寸サイズ（縦x横x高さ mm）を推測する。\n"
+        "3. 推測したサイズと材質から、中身の正味重量（g）を算出する。特に密度（金属は重く、プラスチックは軽い等）を考慮すること。\n"
+        "4. 国際発送用の梱包（ダンボール、緩衝材）を含めた最終的なスペックを出す。梱包材の重さとして +100g、サイズとして 縦+20mm, 横+20mm, 高さ+10mm を加算すること。\n\n"
         "【出力形式】\n"
-        "最終的な『梱包込みの総重量』を、単位(kg)を付けて数値のみで出力してください（例：1.2kg）。文章は一切不要です。"
+        "必ず以下のJSON形式でのみ出力してください（文章は一切不要です）。\n"
+        "{\"weight\": \"数値g\", \"dimensions\": \"縦x横x高さmm\"}"
     )
 
     payload = {
@@ -39,33 +40,34 @@ def estimate_weight_with_llm(ebay_img_url, dimensions):
                 ]
             }
         ],
-        "temperature": 0.0
+        "temperature": 0.0,
+        "response_format": {"type": "json_object"}
     }
 
     try:
-        print(f"[*] Gemma 3 が画像とサイズから重量を推論しています...")
-        response = requests.post(url, headers=headers, json=payload)
+        print(f"[*] Gemma 3 が画像から重量・サイズを推論しています...")
+        response = requests.post(url, headers=headers, json=payload, timeout=20)
         if response.status_code == 200:
             content = response.json()["choices"][0]["message"]["content"].strip()
-            # 1.2kg などの形式を抽出
-            match = re.search(r"(\d+(\.\d+)?)\s?kg", content, re.I)
-            if match:
-                return match.group(0)
-            return content
+            data = json.loads(content)
+            return {
+                "weight": data.get("weight", "不明"),
+                "dimensions": data.get("dimensions", "不明")
+            }
         elif response.status_code == 429:
-            print(f"    [!] OpenRouter 429 Error (Weight). Gemini API でリトライします...")
-            return estimate_weight_with_gemini(ebay_img_url, dimensions, prompt)
+            print(f"    [!] OpenRouter 429 Error (Spec). Gemini API でリトライします...")
+            return estimate_weight_with_gemini(ebay_img_url, final_name, prompt)
     except Exception as e:
-        print(f"[Error] 重量推論失敗: {e}")
+        print(f"[Error] スペック推論失敗: {e}")
     
-    return "不明"
+    return {"weight": "不明", "dimensions": "不明"}
 
-def estimate_weight_with_gemini(ebay_img_url, dimensions, prompt):
-    """重量推論のGeminiフォールバック"""
-    if not GEMINI_API_KEY: return "不明"
+def estimate_weight_with_gemini(ebay_img_url, final_name, prompt):
+    """スペック推論のGeminiフォールバック"""
+    if not GEMINI_API_KEY: return {"weight": "不明", "dimensions": "不明"}
     try:
         img_resp = requests.get(ebay_img_url, timeout=10)
-        if img_resp.status_code != 200: return "不明"
+        if img_resp.status_code != 200: return {"weight": "不明", "dimensions": "不明"}
         img_data = base64.b64encode(img_resp.content).decode('utf-8')
         mime_type = img_resp.headers.get('Content-Type', 'image/jpeg')
 
@@ -78,12 +80,19 @@ def estimate_weight_with_gemini(ebay_img_url, dimensions, prompt):
         }
         resp = requests.post(api_url, json=payload, timeout=20)
         if resp.status_code == 200:
-            content = resp.json()['candidates'][0]['content']['parts'][0]['text'].strip()
-            match = re.search(r"(\d+(\.\d+)?)\s?kg", content, re.I)
-            return match.group(0) if match else content
+            res_json = resp.json()
+            text_content = res_json['candidates'][0]['content']['parts'][0]['text'].strip()
+            # JSON部分を抽出
+            json_match = re.search(r'\{.*\}', text_content, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+                return {
+                    "weight": data.get("weight", "不明"),
+                    "dimensions": data.get("dimensions", "不明")
+                }
     except Exception as e:
-        print(f"    [!] Gemini重量推論失敗: {e}")
-    return "不明"
+        print(f"    [!] Geminiスペック推論失敗: {e}")
+    return {"weight": "不明", "dimensions": "不明"}
 
 def analyze_item_safety_and_tariff(ebay_img_url):
     """

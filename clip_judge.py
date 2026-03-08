@@ -35,10 +35,28 @@ bg_session = new_session("u2net", providers=['CUDAExecutionProvider', 'CPUExecut
 
 # from lightglue_judge import verify_with_lightglue, calculate_lightglue_score
 
-# DINOv2用の前処理
-transform = T.Compose([
-    T.Resize(224),
-    T.CenterCrop(224),
+# DINOv2用の前処理 (Letterbox方式: アスペクト比維持 + パディング)
+def letterbox_transform(img, target_size=224):
+    """
+    アスペクト比を維持してリサイズし、白背景でパディングする
+    """
+    w, h = img.size
+    scale = target_size / max(w, h)
+    new_w, new_h = int(w * scale), int(h * scale)
+    
+    img_resized = img.resize((new_w, new_h), Image.LANCZOS)
+    
+    # 白背景のベース画像を作成
+    new_img = Image.new("RGB", (target_size, target_size), (255, 255, 255))
+    # 中央に配置
+    offset_x = (target_size - new_w) // 2
+    offset_y = (target_size - new_h) // 2
+    new_img.paste(img_resized, (offset_x, offset_y))
+    
+    return new_img
+
+# Tensor変換用 (Letterbox適用後)
+dino_tensor_transform = T.Compose([
     T.ToTensor(),
     T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
@@ -117,7 +135,8 @@ def get_dino_embeddings(images_rgb):
     global device, dino_model
     if not images_rgb: return None
     try:
-        tensors = [transform(img) for img in images_rgb]
+        # Letterbox化してからTensor変換
+        tensors = [dino_tensor_transform(letterbox_transform(img)) for img in images_rgb]
         batch_tensor = torch.stack(tensors).to(device)
         with torch.no_grad():
             embeddings = dino_model(batch_tensor)
@@ -127,7 +146,7 @@ def get_dino_embeddings(images_rgb):
             print(f"    [!] cuBLASエラーを検知しました。CPUで再試行します...")
             device = torch.device("cpu")
             dino_model = dino_model.to(device)
-            tensors = [transform(img) for img in images_rgb]
+            tensors = [dino_tensor_transform(letterbox_transform(img)) for img in images_rgb]
             batch_tensor = torch.stack(tensors).to(device)
             with torch.no_grad():
                 embeddings = dino_model(batch_tensor)
@@ -155,8 +174,13 @@ def get_masked_color_score(rgba1, rgba2):
     通常は HS 70% + V 30% ですが、両者が無彩色の場合は HS 30% + V 70% に切り替えます。
     """
     try:
-        arr1 = np.array(rgba1)
-        arr2 = np.array(rgba2)
+        # カラー判定は CenterCrop(224) を適用して中央重点にする
+        color_crop = T.CenterCrop(224)
+        rgba1_cropped = color_crop(rgba1)
+        rgba2_cropped = color_crop(rgba2)
+        
+        arr1 = np.array(rgba1_cropped)
+        arr2 = np.array(rgba2_cropped)
         
         bgr1 = cv2.cvtColor(arr1[:, :, :3], cv2.COLOR_RGB2BGR)
         mask1 = arr1[:, :, 3]
