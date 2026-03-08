@@ -33,6 +33,7 @@ from ebay_scraper import scrape_ebay_newest_items, scrape_ebay_item_specs, get_b
 from vision_search import find_similar_images_on_web
 from llm_namer import extract_product_name
 from amazon_scraper import search_amazon, search_amazon_via_google, scrape_amazon_specs
+from llm_vision_judge import verify_model_match
 
 def extract_specs_from_text(text):
     w, d = "不明", "不明"
@@ -325,10 +326,7 @@ def main():
                     p_str = re.sub(r'[^\d]', '', detail_price_str)
                     price_val = int(p_str) if p_str else 0
                     
-                    if price_val <= 0:
-                        print(f"    [SKIP] 不正な価格 (¥{price_val}): {item_title[:20]}")
-                        continue
-
+                    item["score"] = final_score
                     item["price_int"] = price_val
                     ship_fee = item.get("actual_shipping_fee", 0)
                     total_price = item["price_int"] + ship_fee
@@ -415,12 +413,18 @@ def main():
                 
                 if amz_results:
                     print(f"    [*] Amazon候補 {len(amz_results)} 件を画像判定中...")
-                    amz_judged = judge_similarity(img_url, amz_results)
+                    
+                    # ✅ 修正：judge_similarity に渡す前に page_url を明示的に保持するリストを作る
+                    amz_for_judge = [{"img_url": r.get("img_url", ""), "page_url": r.get("page_url", ""), "_orig": r} 
+                                     for r in amz_results if r.get("img_url")]
+                    
+                    amz_judged = judge_similarity(img_url, amz_for_judge)
                     
                     # ✅ 修正ポイント: amz_judgedが空でないか、かつ[0]がNoneでないかチェック
                     if amz_judged and amz_judged[0] is not None and amz_judged[0].get("score", 0) >= 70:
                         best_amz = amz_judged[0]
-                        amz_url = best_amz.get("page_url")
+                        # page_urlを直接取得、または_origから取得（二重保険）
+                        amz_url = best_amz.get("page_url") or best_amz.get("_orig", {}).get("page_url")
                         
                         if not amz_url:
                             print("    [-] Amazon一致商品のURLが取得できませんでした。スキップします。")
@@ -444,6 +448,39 @@ def main():
                 print(f"    [!] Amazonスペック補填処理全体でエラー: {e}")
 
         best_item = tentative_best_item
+
+        # ===== 国内最安値のLLM型番検証 =====
+        if best_item and name_data.get("model"):
+            model_number = name_data.get("model", "")
+            print(f"\n[*] 国内最安値商品をLLMで型番検証中（型番: {model_number}）...")
+
+            sorted_candidates = sorted(final_candidates, key=lambda x: x.get("total_price", float('inf')))
+
+            best_item = None
+            for cand in sorted_candidates:
+                cand_img = None
+                cand_imgs = cand.get("img_urls", [])
+                if cand_imgs:
+                    cand_img = cand_imgs[0]
+                elif cand.get("img_url"):
+                    cand_img = cand.get("img_url")
+
+                if not cand_img:
+                    print(f"    [LLM] 画像URLなし → 通過扱い: {cand.get('title','')[:30]}")
+                    best_item = cand
+                    break
+
+                is_match = verify_model_match(img_url, cand_img, model_number)
+                if is_match:
+                    best_item = cand
+                    print(f"    [LLM OK] 国内最安値確定: ¥{cand.get('total_price',0):,} / {cand.get('title','')[:30]}")
+                    break
+                else:
+                    print(f"    [LLM REJECT] 型番不一致 → 次点へ繰り上げ: {cand.get('title','')[:40]}")
+
+            if not best_item:
+                print("    [!] LLM検証で全候補が除外されました。最安値なしとして処理します。")
+        # ====================================
         if best_item:
             database.mark_as_researched(
                 item_id, 
@@ -465,8 +502,9 @@ def main():
             token = get_ebay_token()
             if token:
                 print(f"[*] eBay競合検索キーワード: {final_en_name}")
-                us_top3 = process_market(token, "EBAY_US", final_en_name, img_url, "NEW")
-                uk_top3 = process_market(token, "EBAY_GB", final_en_name, img_url, "NEW")
+                ebay_model_number = name_data.get("model", "")
+                us_top3 = process_market(token, "EBAY_US", final_en_name, img_url, "NEW", model_number=ebay_model_number)
+                uk_top3 = process_market(token, "EBAY_GB", final_en_name, img_url, "NEW", model_number=ebay_model_number)
 
                 # ミラーリングロジック
                 if us_top3 and not uk_top3:

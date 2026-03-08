@@ -10,6 +10,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from config import EBAY_APP_ID, EBAY_CLIENT_SECRET
 from clip_judge import judge_similarity
+from llm_vision_judge import verify_model_match
 
 # 為替レート (簡易的な固定値)
 GBP_TO_USD = 1.25
@@ -85,7 +86,7 @@ def get_item_details(token, item_id, marketplace_id):
         pass
     return None
 
-def process_market(token, market_id, query, ref_img, condition):
+def process_market(token, market_id, query, ref_img, condition, model_number=""):
     items = search_ebay_market(token, query, market_id, condition)
     if not items: return []
     
@@ -189,6 +190,35 @@ def process_market(token, market_id, query, ref_img, condition):
         final_candidates.append(m)
 
     final_candidates.sort(key=lambda x: x["total_usd"])
+
+    # ===== LLM型番一致検証 =====
+    if model_number and final_candidates:
+        print(f"    [*] {market_id}: LLM型番検証を開始します（型番: {model_number}）...")
+        verified = []
+        for cand in final_candidates:
+            cand_img = None
+            img_urls = cand.get("img_urls", [])
+            if img_urls:
+                cand_img = img_urls[0]
+
+            if not cand_img:
+                print(f"    [LLM] 画像URLなし → 通過扱い: {cand.get('title','')[:40]}")
+                verified.append(cand)
+                continue
+
+            is_match = verify_model_match(ref_img, cand_img, model_number)
+            if is_match:
+                verified.append(cand)
+            else:
+                print(f"    [LLM REJECT] 型番不一致のため除外: {cand.get('title','')[:50]}")
+
+        if not verified:
+            print(f"    [!] {market_id}: LLM検証で全件除外されました。")
+        else:
+            print(f"    [*] {market_id}: LLM検証通過 {len(verified)} 件")
+        final_candidates = verified
+    # ===========================
+
     return final_candidates[:3]
 
 def run_test():

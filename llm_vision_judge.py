@@ -334,3 +334,117 @@ def judge_similarity_with_gemini(ebay_img_url, mercari_img_url, prompt):
     except Exception as e:
         print(f"    [!] Gemini類似度判定失敗: {e}")
     return 0
+
+def verify_model_match(ref_img_url, candidate_img_url, model_number):
+    """
+    LLM (Gemma 3 Vision) を用いて、2つの商品画像が同一型番かどうかを判定する。
+    DINOv2パス後の最終フィルターとして使用。
+
+    Returns:
+        True  → 同一型番と判定（採用）
+        False → 別型番と判定（REJECT）
+    """
+    if not OPENROUTER_API_KEY:
+        print("    [WARN] OPENROUTER_API_KEY未設定のためLLM型番判定をスキップ（通過扱い）")
+        return True
+
+    prompt = (
+        f"あなたはプロの時計・商品鑑定士です。以下の2枚の画像を比較してください。\n\n"
+        f"【確認する型番】: {model_number}\n\n"
+        "【判定基準】\n"
+        "- 画像1（参照商品）と画像2（候補商品）が、完全に同じ型番・モデルであるかを判定してください。\n"
+        "- ブランドロゴ、文字盤デザイン、ベゼル形状、バンドの素材・色、インデックス配置など物理的特徴を細かく比較してください。\n"
+        "- カラーバリエーション違い（例：黒×赤 vs 黒×青）は「別型番」として扱ってください。\n"
+        "- 撮影角度・背景・付属品の有無は無視してください。\n\n"
+        "【出力形式】\n"
+        "以下のJSON形式のみで出力してください（説明不要）。\n"
+        "{\"match\": true/false, \"reason\": \"判定理由を一言で\"}"
+    )
+
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "google/gemma-3-27b-it:free",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": ref_img_url}},
+                {"type": "image_url", "image_url": {"url": candidate_img_url}}
+            ]
+        }],
+        "temperature": 0.0,
+        "response_format": {"type": "json_object"}
+    }
+
+    try:
+        print(f"    [LLM] 型番一致判定中: {model_number}...")
+        resp = requests.post(url, headers=headers, json=payload, timeout=20)
+
+        if resp.status_code == 200:
+            content = resp.json()["choices"][0]["message"]["content"].strip()
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+                result = data.get("match", False)
+                reason = data.get("reason", "不明")
+                label = "✅ 一致" if result else "❌ 不一致"
+                print(f"    [LLM] {label} | 理由: {reason}")
+                return bool(result)
+
+        elif resp.status_code == 429:
+            print(f"    [LLM] OpenRouter 429 → Gemini APIでリトライ...")
+            return _verify_model_match_with_gemini(ref_img_url, candidate_img_url, prompt)
+
+        else:
+            print(f"    [LLM] エラー ({resp.status_code}) → 通過扱いにします")
+            return True
+
+    except Exception as e:
+        print(f"    [LLM] 型番判定例外: {e} → 通過扱いにします")
+        return True
+
+
+def _verify_model_match_with_gemini(ref_img_url, candidate_img_url, prompt):
+    """verify_model_matchのGeminiフォールバック"""
+    if not GEMINI_API_KEY:
+        return True
+    try:
+        resp1 = requests.get(ref_img_url, timeout=10)
+        resp2 = requests.get(candidate_img_url, timeout=10)
+        if resp1.status_code != 200 or resp2.status_code != 200:
+            return True
+
+        data1 = base64.b64encode(resp1.content).decode('utf-8')
+        data2 = base64.b64encode(resp2.content).decode('utf-8')
+        mime1 = resp1.headers.get('Content-Type', 'image/jpeg')
+        mime2 = resp2.headers.get('Content-Type', 'image/jpeg')
+
+        model = "gemini-3.1-flash-lite-preview"
+        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt},
+                    {"inline_data": {"mime_type": mime1, "data": data1}},
+                    {"inline_data": {"mime_type": mime2, "data": data2}}
+                ]
+            }]
+        }
+        resp = requests.post(api_url, json=payload, timeout=20)
+        if resp.status_code == 200:
+            text = resp.json()['candidates'][0]['content']['parts'][0]['text'].strip()
+            json_match = re.search(r'\{.*\}', text, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+                result = data.get("match", False)
+                reason = data.get("reason", "不明")
+                label = "✅ 一致" if result else "❌ 不一致"
+                print(f"    [LLM/Gemini] {label} | 理由: {reason}")
+                return bool(result)
+    except Exception as e:
+        print(f"    [LLM/Gemini] フォールバック失敗: {e}")
+    return True
