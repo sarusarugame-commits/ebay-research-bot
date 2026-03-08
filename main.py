@@ -29,9 +29,8 @@ from surugaya_scraper import search_surugaya, scrape_surugaya_item
 from llm_vision_judge import estimate_weight_with_llm, analyze_item_safety_and_tariff
 from clip_judge import judge_similarity
 # verify_with_lightglue は clip_judge 内で使われるようになったよ！
-from ebay_scraper import scrape_ebay_newest_items, scrape_ebay_item_specs, get_browser_page
-from vision_search import find_similar_images_on_web
 from llm_namer import extract_product_name
+from amazon_scraper import search_amazon, scrape_amazon_specs
 
 def extract_specs_from_text(text):
     w, d = "不明", "不明"
@@ -390,6 +389,39 @@ def main():
 
         if weight_final == "不明" and raw_w != "不明": weight_final = truncate_weight(raw_w)
         if dims_final == "不明" and raw_d != "不明": dims_final = adjust_dimensions(raw_d)
+
+        # 5. 【最終補完】Amazonからのスペック抽出（重量/サイズが不明の場合のみ）
+        if weight_final == "不明" or dims_final == "不明":
+            print("\n[*] 重量またはサイズが不明なため、Amazonからスペック情報を最終補完中...")
+            try:
+                browser = get_fresh_browser()
+                # 検索クエリは型番を含めた正式名称を使用
+                amz_search_query = final_name if final_name != "特定不能" else target_item.get('title')
+                amz_results = search_amazon(amz_search_query, browser, max_results=5)
+                
+                if amz_results:
+                    # 画像判定で一致するか確認
+                    print(f"    [*] Amazonで見つかった {len(amz_results)} 件の候補を画像判定中...")
+                    amz_judged = judge_similarity(img_url, amz_results)
+                    
+                    if amz_judged and amz_judged[0].get("score", 0) >= 70:
+                        best_amz = amz_judged[0]
+                        amz_url = best_amz.get("page_url")
+                        print(f"    [MATCH] Amazonで一致商品を発見 (Score: {best_amz['score']:.1f}%). 詳細解析中...")
+                        
+                        amz_specs = scrape_amazon_specs(amz_url, browser)
+                        if weight_final == "不明" and amz_specs.get("weight") != "不明":
+                            weight_final = truncate_weight(amz_specs["weight"])
+                            print(f"    [+] Amazonから重量を取得: {weight_final}")
+                        if dims_final == "不明" and amz_specs.get("dimensions") != "不明":
+                            dims_final = adjust_dimensions(amz_specs["dimensions"])
+                            print(f"    [+] Amazonからサイズを取得: {dims_final}")
+                    else:
+                        print("    [-] Amazonで十分に一致する商品は見つかりませんでした。")
+                else:
+                    print("    [-] Amazonに該当する商品は見つかりませんでした。")
+            except Exception as e:
+                print(f"    [!] Amazonスペック補完中にエラー: {e}")
 
         best_item = tentative_best_item
         if best_item:
