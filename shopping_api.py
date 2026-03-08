@@ -86,11 +86,15 @@ def search_yahoo(keyword):
         if "hits" in data:
             for item in data["hits"]:
                 price = int(item["price"])
-                ship_fee = int(item.get("shipping", {}).get("code", 1))
-                total_price = price if ship_fee == 2 else (price + 800)
+                # Yahoo API V3 は結果によって code や condition が文字列("free", "used"等)で返ることがある
+                ship_code = str(item.get("shipping", {}).get("code", ""))
+                # "2" または "free" が送料無料（暫定）
+                is_free_shipping = (ship_code == "2" or "free" in ship_code.lower())
+                total_price = price if is_free_shipping else (price + 800)
                 
-                cond_code = int(item.get("condition", 1))
-                condition = "中古" if cond_code == 2 else "新品"
+                cond_val = str(item.get("condition", "")).lower()
+                # "2" または "used" が中古
+                condition = "中古" if (cond_val == "2" or "used" in cond_val) else "新品"
                 
                 # Yahoo API V3 は検索結果ではメイン画像1枚のみ
                 img_urls = []
@@ -106,7 +110,7 @@ def search_yahoo(keyword):
                     "condition": condition,
                     "page_url": item["url"],
                     "img_urls": img_urls,
-                    "shipping_included": True if ship_fee == 2 else False
+                    "shipping_included": is_free_shipping
                 })
     except Exception as e:
         print(f"[search_yahoo] Error: {e}")
