@@ -423,15 +423,19 @@ def main():
                     if amz_judged and amz_judged[0].get("score", 0) >= 70:
                         best_amz = amz_judged[0]
                         amz_url = best_amz.get("page_url")
-                        print(f"    [MATCH] Amazonで一致商品を発見 (Score: {best_amz['score']:.1f}%). 詳細解析中...")
                         
-                        amz_specs = scrape_amazon_specs(amz_url, browser)
-                        if weight_final == "不明" and amz_specs.get("weight") != "不明":
-                            weight_final = truncate_weight(amz_specs["weight"])
-                            print(f"    [+] Amazonから重量を取得: {weight_final}")
-                        if dims_final == "不明" and amz_specs.get("dimensions") != "不明":
-                            dims_final = adjust_dimensions(amz_specs["dimensions"])
-                            print(f"    [+] Amazonからサイズを取得: {dims_final}")
+                        if not amz_url:
+                            print("    [-] Amazon一致商品のURLが取得できませんでした。")
+                        else:
+                            print(f"    [MATCH] Amazonで一致商品を発見 (Score: {best_amz['score']:.1f}%). 詳細解析中...")
+                            
+                            amz_specs = scrape_amazon_specs(amz_url, browser)
+                            if weight_final == "不明" and amz_specs.get("weight") != "不明":
+                                weight_final = truncate_weight(amz_specs["weight"])
+                                print(f"    [+] Amazonから重量を取得: {weight_final}")
+                            if dims_final == "不明" and amz_specs.get("dimensions") != "不明":
+                                dims_final = adjust_dimensions(amz_specs["dimensions"])
+                                print(f"    [+] Amazonからサイズを取得: {dims_final}")
                     else:
                         print("    [-] Amazonで十分に一致する商品は見つかりませんでした。")
                 else:
