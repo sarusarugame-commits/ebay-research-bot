@@ -134,10 +134,25 @@ def get_dino_embeddings(images_rgb):
             return embeddings
         raise e
 
+# カラー判定の重み付け定数
+DEFAULT_HS_WEIGHT = 0.7
+DEFAULT_V_WEIGHT = 0.3
+ACHROMATIC_HS_WEIGHT = 0.3
+ACHROMATIC_V_WEIGHT = 0.7
+
+def is_achromatic(hsv_arr, mask, threshold=30):
+    """
+    無彩色判定（平均彩度が低い = 黒・白・シルバー系）
+    """
+    s_channel = hsv_arr[:, :, 1]
+    masked_s = s_channel[mask > 0]
+    if len(masked_s) == 0: return True
+    return np.mean(masked_s) < threshold
+
 def get_masked_color_score(rgba1, rgba2):
     """
     照明変動に強く、かつ黒い商品も判定できるハイブリッド式！
-    HS (色味) 70% + V (明るさ) 30% の重み付けで計算。
+    通常は HS 70% + V 30% ですが、両者が無彩色の場合は HS 30% + V 70% に切り替えます。
     """
     try:
         arr1 = np.array(rgba1)
@@ -169,8 +184,19 @@ def get_masked_color_score(rgba1, rgba2):
         cv2.normalize(hist_v2, hist_v2, 0, 1, cv2.NORM_MINMAX)
         dist_v = cv2.compareHist(hist_v1, hist_v2, cv2.HISTCMP_BHATTACHARYYA)
         
-        # 3. 合成距離 (HS:V = 0.7:0.3)
-        final_dist = (dist_hs * 0.7) + (dist_v * 0.3)
+        
+        # 3. 無彩色判定に基づく重み付けの決定
+        achromatic1 = is_achromatic(hsv1, mask1)
+        achromatic2 = is_achromatic(hsv2, mask2)
+        
+        if achromatic1 and achromatic2:
+            # 両方が無彩色の場合はV（明るさ）を重視
+            hs_weight, v_weight = ACHROMATIC_HS_WEIGHT, ACHROMATIC_V_WEIGHT
+        else:
+            # それ以外はHS（色味）を重視
+            hs_weight, v_weight = DEFAULT_HS_WEIGHT, DEFAULT_V_WEIGHT
+            
+        final_dist = (dist_hs * hs_weight) + (dist_v * v_weight)
         
         # スコア化 (100点満点)
         color_score = max(0, min(100, (1.0 - final_dist) * 100))
