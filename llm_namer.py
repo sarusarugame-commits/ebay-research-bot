@@ -129,7 +129,7 @@ def extract_product_name(ebay_title, scored_candidates):
     }
 
 def extract_english_product_name(ebay_title, scored_candidates):
-    """eBay競合検索用の英語商品名を抽出する"""
+    """eBay競合検索用の英語商品名（検索クエリ）を抽出する"""
     if not OPENROUTER_API_KEY:
         return {"brand": "", "series": "", "model": "", "keywords": "", "full_name": ebay_title.split()[0]}
         
@@ -140,11 +140,11 @@ def extract_english_product_name(ebay_title, scored_candidates):
         "あなたはプロのEC商品アナリストです。以下の情報を分析し、"
         "eBay（USやUKなど）で最も検索されやすく正確な『英語の商品名（検索クエリ）』を抽出してJSONで出力してください。\n\n"
         f"【eBayタイトル（元）】: {ebay_title}\n"
-        f"【候補の頻出単語リスト（単語: 出現数）】: {json.dumps(freq_data, ensure_ascii=False)}\n\n"
+        f"【海外候補の頻出単語リスト（単語: 出現数）】: {json.dumps(freq_data, ensure_ascii=False)}\n\n"
         "【抽出・出力ルール】\n"
-        "1. 基本的に英語（アルファベット・数字）で構成し、日本語は除外してください。\n"
-        "2. 「brand」「series」「model（型番・MPN）」を明確に分けてください。\n"
-        "3. 「keywords」は、色や素材など識別に不可欠な英語キーワードを3つ以内に絞って抽出してください。\n"
+        "1. 英語の名称が頻出単語リストにあれば、それを優先的に採用してください。\n"
+        "2. 「brand」「series」「model」を明確に分けてください。\n"
+        "3. 「keywords」は、色や限定版などの判別に不可不可欠な情報を3つ以内に絞って抽出してください（出現数3以上の単語を優先）。\n"
         "4. 必ず以下のJSON形式のみを出力してください（解説は一切不要）。\n"
         "   {\"brand\": \"Brand\", \"series\": \"Series\", \"model\": \"Model\", \"keywords\": \"Keywords\"}"
     )

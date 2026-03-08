@@ -198,34 +198,30 @@ def main():
         from llm_namer import extract_english_product_name
         
         token = get_ebay_token()
-        final_en_name = target_item.get('title') # 初期値
+        final_en_name = target_item.get('title') # 初期値をセット
         
         if token:
             print("    [*] 元のタイトルでeBay USをプレ検索し、海外の候補画像を収集します...")
-            # 1. 元のタイトルでeBayを検索して候補をごっそり取得
             raw_items = search_ebay_market(token, target_item.get('title'), "EBAY_US", "NEW")
             
-            # 2. 画像URLを持つ候補リストを作成
             en_candidates = []
             for itm in raw_items:
-                img = itm.get("image", {}).get("imageUrl")
-                if img:
-                    en_candidates.append({"title": itm.get("title"), "img_url": img})
+                img_url_cand = itm.get("image", {}).get("imageUrl")
+                if img_url_cand:
+                    en_candidates.append({"title": itm.get("title"), "img_url": img_url_cand})
             
             if en_candidates:
-                # 速度優先で上位30件程度に絞ってから画像判定に回す（PCスペックに余裕があれば絞らなくてもOK！）
-                en_candidates = en_candidates[:30]
+                en_candidates = en_candidates[:30] # 速度優先で上位30件に絞る
                 
                 print(f"    [*] {len(en_candidates)} 件の海外候補を画像判定中 (Color >= 50, DINOv2 >= 70)...")
-                # 3. DINOv2 と OpenCV(Color Gate) が組み込まれた judge_similarity を実行
+                # img_url は eBay オリジナルの画像URL
                 judged_en = judge_similarity(img_url, en_candidates)
                 
-                # 4. スコア70%以上の上位5件に絞る
+                # スコア70以上のものを上位5件まで抽出
                 top_en_matches = [m for m in judged_en if float(m.get("score", 0)) >= 70][:5]
                 
                 if top_en_matches:
                     print(f"    [*] 画像が一致した {len(top_en_matches)} 件のタイトルから英語名を抽出中...")
-                    # 5. AI（Stepfun）に頻出単語リストを渡して純粋な英語名を作らせる
                     en_name_data = extract_english_product_name(target_item.get('title'), top_en_matches)
                     final_en_name = en_name_data.get("full_name", target_item.get('title'))
                 else:
