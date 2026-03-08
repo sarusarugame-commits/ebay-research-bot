@@ -117,6 +117,8 @@ def find_similar_images_on_web(image_uri, browser, max_results=5, force_lens=Fal
                     added += 1
                 if len(results) >= max_results: break
             
+            # 念のため最後に再度スライスして、不整合（6件など）を防ぐ
+            results = results[:max_results]
             print(f" -> Lens補填完了。新たに {added} 件を追加し、合計 {len(results)} 件の国内候補を確保しました！", flush=True)
         except Exception as e:
             print(f"[!] Lens補填検索 失敗: {e}", flush=True)
@@ -196,6 +198,8 @@ def search_global_images_by_lens(image_uri, browser, max_results=5):
                 if len(results) >= max_results: break
                 
             tab.close()
+            # 念のため最後に再度スライス
+            results = results[:max_results]
             print(f" -> Lens補填完了。新たに {added_by_lens} 件を追加し、合計 {len(results)} 件の海外候補を確保しました！", flush=True)
         except Exception as e:
             print(f"[!] Lens補填検索 失敗: {e}", flush=True)
