@@ -171,9 +171,13 @@ def scrape_ebay_newest_items(url, browser):
                     if "Shop on eBay" in title: continue
                     
                     img_tag = container.find('img', class_=re.compile(r'image', re.I)) or container.find('img')
+                    img_url = ""
+                    if img_tag:
+                        img_url = img_tag.get('data-src') or img_tag.get('src') or ""
+
                     scraped_items.append({
                         "id": item_id, "title": title, "link": link, 
-                        "image_url": img_tag.get('src') if img_tag else "",
+                        "image_url": img_url,
                         "timestamp": listing_date if listing_date else now
                     })
                     items_on_this_page += 1

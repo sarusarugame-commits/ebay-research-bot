@@ -235,7 +235,8 @@ def judge_similarity(ebay_img_url, scraped_items):
                 for idx, (item, rgba, rgb) in enumerate(valid_chunk_data):
                     cand_emb = chunk_embs[idx].unsqueeze(0)
                     sim = torch.nn.functional.cosine_similarity(ebay_emb, cand_emb).item()
-                    dino_score = max(0, min(100, (sim - 0.5) * 200)) 
+                    # 修正案（少しマイルドにする： sim が 0.4 以上の部分を 0〜100 に割り当てる）
+                    dino_score = max(0, min(100, (sim - 0.4) * 166.6))
                     
                     item["score"] = dino_score
                     item["dino_score"] = dino_score
