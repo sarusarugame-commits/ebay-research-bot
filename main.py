@@ -289,7 +289,7 @@ def main():
                     # 3. 画像判定 (DINOv2) - 最大5枚すべてチェック
                     print(f"    [*] 画像判定中 ({len(current_img_urls)}枚): {item_title[:20]}...")
                     
-                    img_candidates = [{"img_url": u} for u in current_img_urls]
+                    img_candidates = [{"img_url": u, "page_url": page_url} for u in current_img_urls]
                     judged_imgs = judge_similarity(img_url, img_candidates)
                     
                     if not judged_imgs:
