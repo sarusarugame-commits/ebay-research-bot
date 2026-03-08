@@ -117,53 +117,87 @@ def scrape_ebay_item_specs(item_id, browser):
 
 def scrape_ebay_newest_items(url, browser):
     print(f"[*] eBay一覧読込中...", flush=True)
+    scraped_items = []
+    unique_ids = set()
+    max_pages = 5
+    
     try:
         tab = browser.latest_tab
         tab.get(url, timeout=20)
         handle_ebay_popups(tab)
-        tab.wait(3)
-        tab.scroll.down(1500)
-        soup = BeautifulSoup(tab.html, 'html.parser')
-        itm_links = soup.find_all('a', href=re.compile(r'/itm/'))
-        unique_ids = set()
-        scraped_items = []
-        now = datetime.datetime.now()
-        limit_date = datetime.datetime(now.year, now.month, 1) if now.day <= 15 else datetime.datetime(now.year, now.month, 16)
         
-        for link_tag in itm_links:
-            try:
-                link = link_tag.get('href')
-                item_id = re.search(r'itm/(\d+)', link).group(1)
-                if item_id in unique_ids: continue
-                unique_ids.add(item_id)
-                container = None
-                p = link_tag
-                for _ in range(10):
-                    p = p.parent
-                    if not p: break
-                    if 's-item' in p.get('class', []) or 's-card' in p.get('class', []):
-                        container = p; break
-                if not container: continue
-                listing_date = parse_ebay_date(container.get_text(separator=' ', strip=True))
-                if listing_date and listing_date < limit_date: continue
-                title_tag = container.find(['h3', 'div', 'span'], class_=re.compile(r'title', re.I))
+        for page_num in range(1, max_pages + 1):
+            print(f"[*] eBay一覧 {page_num}ページ目を解析中...", flush=True)
+            tab.wait(2)
+            tab.scroll.down(1500)
+            soup = BeautifulSoup(tab.html, 'html.parser')
+            itm_links = soup.find_all('a', href=re.compile(r'/itm/'))
+            
+            now = datetime.datetime.now()
+            # 1-15日なら当月1日以降、16-末日なら当月16日以降
+            limit_date = datetime.datetime(now.year, now.month, 1) if now.day <= 15 else datetime.datetime(now.year, now.month, 16)
+            
+            items_on_this_page = 0
+            found_older_item = False
+            
+            for link_tag in itm_links:
+                try:
+                    link = link_tag.get('href')
+                    item_id_match = re.search(r'itm/(\d+)', link)
+                    if not item_id_match: continue
+                    item_id = item_id_match.group(1)
+                    if item_id in unique_ids: continue
+                    unique_ids.add(item_id)
+                    
+                    container = None
+                    p = link_tag
+                    for _ in range(10):
+                        p = p.parent
+                        if not p: break
+                        if 's-item' in p.get('class', []) or 's-card' in p.get('class', []):
+                            container = p; break
+                    if not container: continue
+                    
+                    listing_date = parse_ebay_date(container.get_text(separator=' ', strip=True))
+                    
+                    # リミット日より古い商品が見つかったら、このページで終わり（かつ次のページも不要）
+                    if listing_date and listing_date < limit_date:
+                        found_older_item = True
+                        continue
+                        
+                    title_tag = container.find(['h3', 'div', 'span'], class_=re.compile(r'title', re.I))
+                    raw_title = title_tag.get_text(strip=True) if title_tag else "Unknown"
+                    title = raw_title.replace("Opens in a new window or tab", "").replace("Opens in a new window", "").strip()
+                    if "Shop on eBay" in title: continue
+                    
+                    img_tag = container.find('img', class_=re.compile(r'image', re.I)) or container.find('img')
+                    scraped_items.append({
+                        "id": item_id, "title": title, "link": link, 
+                        "image_url": img_tag.get('src') if img_tag else "",
+                        "timestamp": listing_date if listing_date else now
+                    })
+                    items_on_this_page += 1
+                except: continue
+            
+            print(f"  -> {page_num}ページ目: {items_on_this_page} 件の新規商品を検出しました。", flush=True)
+            
+            # 古い商品が見つかった、あるいはこのページで1件も新規がなければ終了
+            if found_older_item:
+                print(f"[*] 指定期間外の商品に到達したため、検索を終了します。", flush=True)
+                break
+            
+            # 次のページボタンを探す
+            next_btn = tab.ele('css:a.pagination__next', timeout=2)
+            if next_btn:
+                print(f"[*] 次のページへ遷移します...", flush=True)
+                next_btn.click()
+                tab.wait.load_start()
+            else:
+                print(f"[*] 次のページが見つかりません。検索を終了します。", flush=True)
+                break
                 
-                # 1. まずテキストを取得する
-                raw_title = title_tag.get_text(strip=True) if title_tag else "Unknown"
-                
-                # 2. eBay特有のゴミ文字（アクセシビリティテキスト）を強制削除！
-                title = raw_title.replace("Opens in a new window or tab", "").replace("Opens in a new window", "").strip()
-                
-                if "Shop on eBay" in title: continue
-                img_tag = container.find('img', class_=re.compile(r'image', re.I)) or container.find('img')
-                scraped_items.append({
-                    "id": item_id, "title": title, "link": link, 
-                    "image_url": img_tag.get('src') if img_tag else "",
-                    "timestamp": listing_date if listing_date else now
-                })
-            except: continue
-        print(f" -> {len(scraped_items)} 件の商品を検出しました。", flush=True)
+        print(f" -> 合計 {len(scraped_items)} 件の商品を検出しました。", flush=True)
         return scraped_items
     except Exception as e:
         print(f"[!] eBay一覧取得失敗: {e}", flush=True)
-        return []
+        return scraped_items # 途中でエラーが起きても取れた分は返す
