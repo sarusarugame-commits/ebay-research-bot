@@ -42,6 +42,36 @@ transform = T.Compose([
     T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
 
+# ============================================================
+# 【設定】Color Gate 閾値
+# 黒・ダーク系商品は照明差で色スコアが低くなりやすいため 30 に緩和
+# ============================================================
+COLOR_GATE_THRESHOLD = 30
+
+def make_fallback_rgba(img_rgb):
+    """
+    rembg失敗時のフォールバック。
+    中央70%をクロップして周辺背景を減らし、
+    HSV輝度閾値で簡易的な前景マスクを作ってRGBAを返す。
+    完璧ではないが「背景込み全面」よりはるかにマシ。
+    """
+    w, h = img_rgb.size
+    # 中央70%クロップ
+    margin_x, margin_y = int(w * 0.15), int(h * 0.15)
+    cropped = img_rgb.crop((margin_x, margin_y, w - margin_x, h - margin_y))
+
+    arr = np.array(cropped)
+    hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV)
+
+    # 白・明るいグレー背景を除外するマスク（V > 240 かつ S < 30 を背景とみなす）
+    bg_mask = (hsv[:, :, 2] > 240) & (hsv[:, :, 1] < 30)
+    alpha = np.where(bg_mask, 0, 255).astype(np.uint8)
+
+    rgba = np.dstack([arr, alpha])
+    result = Image.fromarray(rgba, "RGBA")
+    print(f"    [WARN] rembg失敗 → 簡易マスクで代替処理しました")
+    return result
+
 def load_and_remove_bg(url, max_size=400):
     """画像をダウンロードし、リサイズ＆背景除去して RGBA画像 を返す"""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
@@ -54,6 +84,22 @@ def load_and_remove_bg(url, max_size=400):
         img.thumbnail((max_size, max_size))
         
         img_rgba = remove(img, session=bg_session)
+
+        # ============================================================
+        # 【修正】背景除去の成否を検証する
+        # rembgがRGBのまま返す・アルファが全不透明の場合は失敗とみなす
+        # ============================================================
+        if img_rgba.mode != "RGBA":
+            print(f"    [WARN] rembgがRGBAを返しませんでした (mode={img_rgba.mode})。フォールバックします。")
+            return make_fallback_rgba(img)
+
+        alpha_arr = np.array(img_rgba)[:, :, 3]
+        transparent_ratio = np.sum(alpha_arr == 0) / alpha_arr.size
+        if transparent_ratio < 0.05:
+            # 透過ピクセルが5%未満 = ほぼ除去できていない
+            print(f"    [WARN] 背景除去がほぼ機能していません (透過率={transparent_ratio:.1%})。フォールバックします。")
+            return make_fallback_rgba(img)
+
         return img_rgba
     except Exception as e:
         print(f"    [!] 画像ロード/背景除去エラー ({url[:50]}...): {e}")
@@ -151,7 +197,7 @@ def judge_similarity(ebay_img_url, scraped_items):
 
     results = []
     batch_size = 5
-    print(f"    [*] {len(scraped_items)} 件の候補をバッチ判定中 (Batch Size: {batch_size})...")
+    print(f"    [*] {len(scraped_items)} 件の候補を精密判定中 (Color Gate: {COLOR_GATE_THRESHOLD})...")
     
     # 5件ずつのバッチで処理
     for i in range(0, len(scraped_items), batch_size):
@@ -178,8 +224,8 @@ def judge_similarity(ebay_img_url, scraped_items):
                 item["color_score"] = color_score
                 
                 item_url = item.get("page_url") or item.get("item_url") or item.get("item_affiliate_web_url") or "No URL"
-                if color_score < 50:
-                    print(f"    [REJECT] Color Score too low ({color_score:.1f})")
+                if color_score < COLOR_GATE_THRESHOLD:
+                    print(f"    [REJECT] Color Score too low ({color_score:.1f}) < {COLOR_GATE_THRESHOLD}")
                     print(f"    [-] URL: {item_url}")
                     item["score"] = 0
                     results.append(item)
