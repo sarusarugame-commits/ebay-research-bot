@@ -71,7 +71,6 @@ def convert_to_usd(value, currency):
 
 def get_item_details(token, item_id, marketplace_id):
     # Browse API: Get Item
-    # item_id format is often "v1|...|0"
     url = f"https://api.ebay.com/buy/browse/v1/item/{item_id}"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -92,14 +91,12 @@ def process_market(token, market_id, query, ref_img, condition):
     
     print(f"    [*] {market_id}: {len(items)} 件の商品を検索一覧から取得。")
     
-    # 検索一覧からの候補作成 (送料が不明でも一旦含める)
     initial_candidates = []
     for itm in items:
         p_data = itm.get("price", {})
         price_val = float(p_data.get("value", 0))
         price_currency = p_data.get("currency", "USD")
         
-        # 画像URL取得
         main_img = itm.get("image", {}).get("imageUrl")
         add_imgs = itm.get("additionalImageUrls", [])
         img_urls = [main_img] if main_img else []
@@ -112,7 +109,7 @@ def process_market(token, market_id, query, ref_img, condition):
             "currency": price_currency,
             "img_urls": img_urls,
             "item_url": itm.get("itemWebUrl"),
-            "raw_itm": itm # 後で使うため
+            "raw_itm": itm
         })
 
     if not initial_candidates: return []
@@ -120,11 +117,9 @@ def process_market(token, market_id, query, ref_img, condition):
     print(f"    [*] {market_id}: {len(initial_candidates)} 件の候補を画像判定中...")
     judged = judge_similarity(ref_img, initial_candidates)
     
-    # スコア70以上のものを抽出
     top_matches = [m for m in judged if m.get("score", 0) >= 70]
     if not top_matches: return []
     
-    # 類似度順に並べて上位5件に対し、詳細APIを叩いて正確な送料を取得する
     top_matches.sort(key=lambda x: x["score"], reverse=True)
     best_5 = top_matches[:5]
     
@@ -146,11 +141,8 @@ def process_market(token, market_id, query, ref_img, condition):
                 print(f"        [-] No shipping options (Empty []), skipping item.")
                 found_ship = False
             else:
-                # 優先順位: 0.0以上の有効な設定があるものを見つける
-                # Pickup は基本的にもともと入っていないはずだが念のため除外（コストがあれば採用）
                 valid_opts = [o for o in ship_options if o.get("shippingCostType") in ["FIXED", "CALCULATED"] and "shippingCost" in o]
                 
-                # Authenticity Guarantee 対応: サービスコードや表示名称に authenticator が含まれている場合、その金額を採用
                 auth_opts = []
                 for o in ship_options:
                     svc_code = (o.get("shippingServiceCode") or "").lower()
@@ -166,10 +158,8 @@ def process_market(token, market_id, query, ref_img, condition):
                     print(f"        [+] Authenticity Guarantee Fee found: {ship_val} {ship_currency}")
                     found_ship = True
                 elif valid_opts:
-                    # 送料が安い順に並び替えて、一番安いもの（0.00も含む）を最安送料として採用する！
                     valid_opts.sort(key=lambda o: float(o.get("shippingCost", {}).get("value", 0)))
                     opt = valid_opts[0]
-                    
                     sc = opt.get("shippingCost", {})
                     ship_val = float(sc.get("value", 0))
                     ship_currency = sc.get("currency", "USD")
@@ -177,7 +167,6 @@ def process_market(token, market_id, query, ref_img, condition):
                     found_ship = True
         
         if not found_ship:
-            # Fallback to Summary
             itm = m.get("raw_itm", {})
             ship_options = itm.get("shippingOptions", [])
             valid_opts = [o for o in ship_options if o.get("shippingCostType") in ["FIXED", "CALCULATED"] and "shippingCost" in o]
@@ -193,7 +182,6 @@ def process_market(token, market_id, query, ref_img, condition):
             print(f"        [-] No valid shipping found for {item_id}, skipping.")
             continue
 
-        # 最終的な合計価格(USD)を再計算
         total_usd = convert_to_usd(m["price"], m["currency"]) + convert_to_usd(ship_val, ship_currency)
         
         m["shipping"] = ship_val
@@ -201,7 +189,6 @@ def process_market(token, market_id, query, ref_img, condition):
         m["total_usd"] = total_usd
         final_candidates.append(m)
 
-    # 合計価格順にソートして上位3件を返す
     final_candidates.sort(key=lambda x: x["total_usd"])
     return final_candidates[:3]
 
@@ -213,12 +200,9 @@ def run_test():
     token = get_ebay_token()
     if not token: return
 
-    # US
     us_top3 = process_market(token, "EBAY_US", QUERY, REF_IMG, CONDITION)
-    # UK
     uk_top3 = process_market(token, "EBAY_GB", QUERY, REF_IMG, CONDITION)
 
-    # 相互補完ロジック (ミラーリング)
     if us_top3 and not uk_top3:
         print("[*] UK の結果が空のため、US の結果を UK にミラーリングします。")
         uk_top3 = us_top3.copy()
