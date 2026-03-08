@@ -23,6 +23,7 @@ print = functools.partial(print, flush=True)
 
 from config import EBAY_APP_ID, GOOGLE_APPLICATION_CREDENTIALS
 import database
+from ebay_api import get_item_details
 from mercari_scraper import search_mercari, search_rakuma, scrape_item_data
 from surugaya_scraper import search_surugaya, scrape_surugaya_item
 from llm_vision_judge import estimate_weight_with_llm, analyze_item_safety_and_tariff
@@ -129,12 +130,13 @@ def main():
         
         # スペック収集
         ebay_specs = scrape_ebay_item_specs(item_id, browser)
+        
         raw_w, raw_d = ebay_specs.get("weight", "不明"), ebay_specs.get("dimensions", "不明")
         img_url = target_item.get("image_url")
 
         # 2. 画像検索
         print("\n[*] Google Vision API / Lens を使用して類似画像を検索中...")
-        candidate_pages = find_similar_images_on_web(img_url, browser, max_results=5)
+        candidate_pages = find_similar_images_on_web(img_url, browser, max_results=15)
         
         scored_candidates = []
         if candidate_pages:
@@ -171,6 +173,28 @@ def main():
                 for p in jp_candidates:
                     _, d = extract_specs_from_text(p.get("title", "") + " " + p.get("snippet", ""))
                     if d != "不明": raw_d = d; break
+
+            print("\n[*] eBay検索用の英語商品名を特定中...")
+            # 画像URLがある全候補（海外サイト含む）を抽出
+            en_candidates_with_img = [c for c in candidate_pages if c.get('img_url')]
+            
+            judged_en = []
+            if en_candidates_with_img:
+                # judge_similarity は Color 50%以下除外、DINOv2スコア付与を内包している！
+                judged_en = judge_similarity(img_url, en_candidates_with_img)
+                
+            # 70%以上に絞り込み、上位5商品を取得
+            top_en_candidates = [c for c in judged_en if float(c.get('score', 0)) >= 70][:5]
+            
+            if not top_en_candidates:
+                print("    [!] スコア70%以上の英語候補が見つかりませんでした。元のタイトルを使用します。")
+                top_en_candidates = [{"title": target_item.get('title')}]
+
+            # 作った関数を呼び出して英語名を決定！
+            from llm_namer import extract_english_product_name
+            en_name_data = extract_english_product_name(target_item.get('title'), top_en_candidates)
+            final_en_name = en_name_data.get("full_name", target_item.get('title'))
+            print(f" -> 最終確定した英語名: {final_en_name}")
 
         # 3. 商品名特定
         print("\n[*] AI を使用して日本語正式商品名を特定中...")
@@ -378,6 +402,64 @@ def main():
                 weight=weight_final, 
                 dimensions=dims_final
             )
+            
+            print("\n[*] 国内最安値が判明したため、eBayでの競合最安値とUS/UK配送料をチェックします...")
+            # Browse API を使用して正確な送料と配送可否を取得 (US/UK)
+            print(f"[*] eBay API で詳細情報を取得中 (US/UK配送コンテキスト)...")
+            details_us = get_item_details(item_id, marketplace_id='EBAY_US', country='US', zip_code='10001')
+            details_uk = get_item_details(item_id, marketplace_id='EBAY_GB', country='GB', zip_code='E1 6AN')
+            
+            if details_uk and not details_uk.get("is_shippable"):
+                print(f"    [⚠️ SKIP] この商品はイギリス (UK) へ配送不可と判定されました。")
+                # 配送不可の場合は上書き保存
+                database.mark_as_researched(
+                    item_id, 
+                    platform=best_item.get("platform"), 
+                    title=best_item.get("title"), 
+                    price=best_item.get("total_price"), 
+                    condition=best_item.get("condition"), 
+                    url=best_item.get("page_url"), 
+                    weight="SKIPPED", 
+                    dimensions="NOT_SHIPPABLE_TO_UK"
+                )
+
+            shipping_cost_us = details_us.get("shipping_cost", 0.0) if details_us else 0.0
+            print(f"    -> US送料: ${shipping_cost_us:.2f}")
+
+            print("\n[*] 国内最安値が判明したため、eBay全体での競合最安値（US/UK）をチェックします...")
+            from validate_ebay_search_v3 import process_market, get_ebay_token
+            
+            token = get_ebay_token()
+            if token:
+                print(f"[*] eBay競合検索キーワード: {final_en_name}")
+                us_top3 = process_market(token, "EBAY_US", final_en_name, img_url, "NEW")
+                uk_top3 = process_market(token, "EBAY_GB", final_en_name, img_url, "NEW")
+
+                # ミラーリングロジック
+                if us_top3 and not uk_top3:
+                    print("[*] UK の結果が空のため、US の結果を UK にミラーリングします。")
+                    uk_top3 = us_top3.copy()
+                elif uk_top3 and not us_top3:
+                    print("[*] US の結果が空のため、UK の結果を US にミラーリングします。")
+                    us_top3 = uk_top3.copy()
+
+                print("\n" + "="*50)
+                print("   🏆 eBay Global 競合最安値 (Top 3)")
+                print("="*50)
+                results = {"US": us_top3, "UK": uk_top3}
+                for m_id in ["US", "UK"]:
+                    print(f"\n[Market: eBay {m_id}]")
+                    if not results[m_id]:
+                        print("  一致する商品は見つかりませんでした。")
+                    else:
+                        for i, res in enumerate(results[m_id], 1):
+                            print(f"  Rank {i}: {res['title'][:60]}...")
+                            print(f"    - 合計価格: ${res['total_usd']:,.2f} USD (本体:{res['price']} {res['currency']} + 送料:{res['shipping']})")
+                            print(f"    - 適合率:   {res['score']:.1f}%")
+                            print(f"    - URL:      {res['item_url']}")
+            else:
+                print("[!] eBay APIトークンが取得できなかったため、競合チェックをスキップします。")
+
         else:
             database.mark_as_researched(item_id, weight=weight_final, dimensions=dims_final)
 

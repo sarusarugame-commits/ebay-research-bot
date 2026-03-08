@@ -127,3 +127,52 @@ def extract_product_name(ebay_title, scored_candidates):
         "brand": words[0], "series": "", "model": model_candidate, "keywords": "",
         "full_name": fallback_name
     }
+
+def extract_english_product_name(ebay_title, scored_candidates):
+    """eBay競合検索用の英語商品名を抽出する"""
+    if not OPENROUTER_API_KEY:
+        return {"brand": "", "series": "", "model": "", "keywords": "", "full_name": ebay_title.split()[0]}
+        
+    titles = [c['title'] for c in scored_candidates if c.get('title')]
+    freq_data = get_word_frequencies(titles)
+    
+    prompt = (
+        "あなたはプロのEC商品アナリストです。以下の情報を分析し、"
+        "eBay（USやUKなど）で最も検索されやすく正確な『英語の商品名（検索クエリ）』を抽出してJSONで出力してください。\n\n"
+        f"【eBayタイトル（元）】: {ebay_title}\n"
+        f"【候補の頻出単語リスト（単語: 出現数）】: {json.dumps(freq_data, ensure_ascii=False)}\n\n"
+        "【抽出・出力ルール】\n"
+        "1. 基本的に英語（アルファベット・数字）で構成し、日本語は除外してください。\n"
+        "2. 「brand」「series」「model（型番・MPN）」を明確に分けてください。\n"
+        "3. 「keywords」は、色や素材など識別に不可欠な英語キーワードを3つ以内に絞って抽出してください。\n"
+        "4. 必ず以下のJSON形式のみを出力してください（解説は一切不要）。\n"
+        "   {\"brand\": \"Brand\", \"series\": \"Series\", \"model\": \"Model\", \"keywords\": \"Keywords\"}"
+    )
+
+    models = [
+        {"id": "stepfun/step-3.5-flash:free", "json": False},
+        {"id": "z-ai/glm-4.5-air:free", "json": True}
+    ]
+
+    for m in models:
+        print(f"[*] AI ({m['id']}) で英語商品名を抽出中...")
+        res = call_llm_api(m['id'], prompt, response_format={"type": "json_object"} if m['json'] else None)
+        
+        if res and "choices" in res:
+            content = res["choices"][0]["message"]["content"].strip()
+            data = parse_llm_json(content)
+            if data:
+                brand = data.get("brand", "").strip()
+                series = data.get("series", "").strip()
+                model = data.get("model", "").strip()
+                keywords = data.get("keywords", "").strip()
+                
+                full_name = f"{brand} {series} {model} {keywords}".strip().replace("  ", " ")
+                print(f"    - 抽出成功: {full_name}")
+                return {"brand": brand, "series": series, "model": model, "keywords": keywords, "full_name": full_name}
+                
+    # 全て失敗時のフォールバック
+    words = ebay_title.split()
+    model_candidate = next((w for w in words if any(c.isdigit() for c in w) and len(w) > 4), "")
+    fallback_name = f"{words[0]} {model_candidate}".strip()
+    return {"brand": words[0], "series": "", "model": model_candidate, "keywords": "", "full_name": fallback_name}

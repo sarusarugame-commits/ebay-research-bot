@@ -132,3 +132,76 @@ def fetch_items(seller, keyword="", start_date_str=""):
         })
             
     return items
+
+@retry()
+def get_item_details(item_id, marketplace_id='EBAY_US', country='US', zip_code='10001'):
+    """
+    X-EBAY-C-ENDUSERCTX ヘッダーを使用して、特定地域向けの正確な送料と商品詳細を取得する。
+    """
+    # print(f"[*] eBay API 詳細取得中 (ID: {item_id}, Market: {marketplace_id}, Country: {country})...")
+    token = get_ebay_token()
+    
+    # Browse APIの getItem エンドポイント
+    # v1|...|0 形式の場合はそのまま使う。数値のみの場合は v1|item_id|0 形式に変換を試みる
+    full_item_id = item_id
+    if "|" not in item_id:
+        full_item_id = f"v1|{item_id}|0"
+        
+    url = f"https://api.ebay.com/buy/browse/v1/item/{full_item_id}"
+    
+    ctx = f"contextualLocation=country={country},zip={zip_code}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-EBAY-C-MARKETPLACE-ID": marketplace_id,
+        "X-EBAY-C-ENDUSERCTX": ctx,
+        "Content-Type": "application/json"
+    }
+    
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+        print(f"[!] getItem エラー ({response.status_code}): {response.text}")
+        return None
+        
+    data = response.json()
+    
+    # 送料の抽出
+    shipping_options = data.get("shippingOptions", [])
+    shipping_cost = 0.0
+    is_shippable = len(shipping_options) > 0
+    
+    if is_shippable:
+        # 最初のオプションをデフォルトとする
+        opt = shipping_options[0]
+        cost_data = opt.get("shippingCost", {})
+        
+        # shippingCostType が None or 存在しない場合、Authenticity Guarantee 等の可能性をチェック
+        # オプション名に authenticator が含まれていればその金額を採用
+        cost_value = cost_data.get("value")
+        if cost_value is None:
+            # authenticator 関連のチェック
+            matching_auth = False
+            for o in shipping_options:
+                service_info = o.get("shippingServiceCode", "").lower()
+                if "authenticator" in service_info:
+                    val = o.get("shippingCost", {}).get("value")
+                    if val:
+                        shipping_cost = float(val)
+                        print(f"    [INFO] Authenticity Guarantee 配送コストを自動適用: ${shipping_cost}")
+                        matching_auth = True
+                        break
+            if not matching_auth:
+                shipping_cost = 0.0 # 不明な場合は 0.0 とするが警告
+                print(f"    [WARN] 送料が取得できません。0.0 として扱います。")
+        else:
+            shipping_cost = float(cost_value)
+    else:
+        print(f"    [WARN] この地域 ({country}) への配送オプションが見つかりません。配送不可です。")
+
+    return {
+        "item_id": item_id,
+        "price": data.get("price", {}).get("value"),
+        "currency": data.get("price", {}).get("currency"),
+        "shipping_cost": shipping_cost,
+        "is_shippable": is_shippable,
+        "raw_data": data
+    }
