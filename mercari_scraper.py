@@ -196,9 +196,14 @@ def search_mercari(keyword, browser_page, max_results=20):
 
 def search_rakuma(keyword, browser_page, max_results=10):
     """ラクマ検索 (DrissionPage実装・本稼働版)"""
-    encoded_keyword = urllib.parse.quote(keyword)
+    # 💡 ラクマのポンコツ検索エンジン対策！
+    # ハイフン「-」をマイナス検索（除外）や分割文字と誤認して関係ない商品(1000など)を出すバグを防ぐため、
+    # 検索前にハイフンを半角スペースに置き換えて純粋なAND検索になるようにサニタイズするよ！
+    safe_keyword = keyword.replace("-", " ")
+    
+    encoded_keyword = urllib.parse.quote(safe_keyword)
     url = f"https://fril.jp/search/{encoded_keyword}"
-    print(f"[*] ラクマ検索開始: {keyword}")
+    print(f"[*] ラクマ検索開始: {keyword} -> (内部クエリ: {safe_keyword})")
     
     results = []
     try:

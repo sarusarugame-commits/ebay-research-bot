@@ -52,9 +52,37 @@ def estimate_weight_with_llm(ebay_img_url, dimensions):
             if match:
                 return match.group(0)
             return content
+        elif response.status_code == 429:
+            print(f"    [!] OpenRouter 429 Error (Weight). Gemini API でリトライします...")
+            return estimate_weight_with_gemini(ebay_img_url, dimensions, prompt)
     except Exception as e:
         print(f"[Error] 重量推論失敗: {e}")
     
+    return "不明"
+
+def estimate_weight_with_gemini(ebay_img_url, dimensions, prompt):
+    """重量推論のGeminiフォールバック"""
+    if not GEMINI_API_KEY: return "不明"
+    try:
+        img_resp = requests.get(ebay_img_url, timeout=10)
+        if img_resp.status_code != 200: return "不明"
+        img_data = base64.b64encode(img_resp.content).decode('utf-8')
+        mime_type = img_resp.headers.get('Content-Type', 'image/jpeg')
+
+        model = "gemini-3.1-flash-lite-preview"
+        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+        payload = {
+            "contents": [{
+                "parts": [{"text": prompt}, {"inline_data": {"mime_type": mime_type, "data": img_data}}]
+            }]
+        }
+        resp = requests.post(api_url, json=payload, timeout=20)
+        if resp.status_code == 200:
+            content = resp.json()['candidates'][0]['content']['parts'][0]['text'].strip()
+            match = re.search(r"(\d+(\.\d+)?)\s?kg", content, re.I)
+            return match.group(0) if match else content
+    except Exception as e:
+        print(f"    [!] Gemini重量推論失敗: {e}")
     return "不明"
 
 def analyze_item_safety_and_tariff(ebay_img_url):
@@ -254,9 +282,9 @@ def judge_similarity_with_llm(ebay_img_url, scraped_items):
                             score = int(match.group())
                         break
                 elif response.status_code == 429:
-                    print(f"     [!] Rate limit (429) 検出。5秒待機してリトライします... (試行 {attempt+1}/3)")
-                    time.sleep(5)
-                    continue
+                    print(f"     [!] Rate limit (429) 検出。Gemini API でリトライします...")
+                    score = judge_similarity_with_gemini(ebay_img_url, mercari_img_url, combined_prompt)
+                    break
                 else:
                     print(f"     [!] エラー: {response.status_code} - {response.text}")
                     break
@@ -271,3 +299,38 @@ def judge_similarity_with_llm(ebay_img_url, scraped_items):
     # スコアの降順でソート
     results.sort(key=lambda x: x.get("score", 0), reverse=True)
     return results
+
+def judge_similarity_with_gemini(ebay_img_url, mercari_img_url, prompt):
+    """画像類似度判定のGeminiフォールバック"""
+    if not GEMINI_API_KEY: return 0
+    try:
+        # 1. 2つの画像をダウンロード
+        resp1 = requests.get(ebay_img_url, timeout=10)
+        resp2 = requests.get(mercari_img_url, timeout=10)
+        if resp1.status_code != 200 or resp2.status_code != 200: return 0
+        
+        data1 = base64.b64encode(resp1.content).decode('utf-8')
+        data2 = base64.b64encode(resp2.content).decode('utf-8')
+        mime1 = resp1.headers.get('Content-Type', 'image/jpeg')
+        mime2 = resp2.headers.get('Content-Type', 'image/jpeg')
+
+        model = "gemini-3.1-flash-lite-preview"
+        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+        
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt},
+                    {"inline_data": {"mime_type": mime1, "data": data1}},
+                    {"inline_data": {"mime_type": mime2, "data": data2}}
+                ]
+            }]
+        }
+        resp = requests.post(api_url, json=payload, timeout=20)
+        if resp.status_code == 200:
+            text = resp.json()['candidates'][0]['content']['parts'][0]['text'].strip()
+            match = re.search(r'\d+', text)
+            return int(match.group()) if match else 0
+    except Exception as e:
+        print(f"    [!] Gemini類似度判定失敗: {e}")
+    return 0
