@@ -34,7 +34,7 @@ from vision_search import find_similar_images_on_web
 from llm_namer import extract_product_name
 from shopping_api import search_rakuten, search_yahoo, scrape_yahoo_item
 from amazon_scraper import search_amazon, search_amazon_via_google, scrape_amazon_specs
-from llm_vision_judge import verify_model_match, judge_match_and_condition
+from llm_vision_judge import verify_model_match
 from excel_writer import write_to_excel
 
 def extract_specs_from_text(text):
@@ -510,7 +510,7 @@ def main():
 
         best_item = tentative_best_item
 
-        # ===== 国内最安値のLLM検証（同一性＋コンディション判定） =====
+        # ===== 国内最安値のLLM型番検証（同一性＋コンディション同時判定） =====
         ebay_condition = "Good" # デフォルト
         if best_item and name_data.get("model"):
             model_number = name_data.get("model", "")
@@ -528,21 +528,22 @@ def main():
                     break
 
                 # 同一性とコンディションを同時に判定
-                domestic_desc = cand.get("description", "") + " " + cand.get("title", "")
-                result = judge_match_and_condition(img_url, cand_img, domestic_desc, model_number)
+                domestic_desc = cand.get("condition", "") + " " + cand.get("description", "")
+                is_match, cond = verify_model_match(img_url, cand_img, model_number, domestic_desc)
                 
-                if result.get("match"):
+                if is_match:
                     best_item = cand
-                    ebay_condition = result.get("condition", "Good")
-                    print(f"    [LLM OK] 国内最安値確定: ¥{cand.get('total_price',0):,} / {cand.get('title','')[:30]}")
-                    print(f"    [*] AI判定によるeBayコンディション: {ebay_condition}")
+                    ebay_condition = cond
+                    # あとでExcel書き込みに使うために保存しておく
+                    best_item['ebay_condition'] = ebay_condition
                     break
                 else:
-                    print(f"    [LLM REJECT] 型番不一致 → 次点へ繰り上げ: {cand.get('title','')[:40]} | 理由: {result.get('reason')}")
+                    # 不一致の場合は次点へ
+                    pass
 
             if not best_item:
                 print("    [!] LLM検証で全候補が除外されました。最安値なしとして処理します。")
-        # ============================================================
+        # ====================================================================
         if best_item:
             database.mark_as_researched(
                 item_id, 
@@ -625,15 +626,16 @@ def main():
         # 6. Excelへの自動書き込み
         if best_item:
             # 書き込み用データの整形
-            # 寸法（XXxXXxXXmm）から数値を抽出
             def ext_dim(d_str, idx):
                 nums = re.findall(r"\d+", d_str)
                 return nums[idx] if len(nums) > idx else ""
 
-            # 重量を数値のみ抽出
             def ext_weight(w_str):
                 match = re.search(r"\d+", w_str.replace(",", ""))
                 return match.group() if match else ""
+
+            # 保存された ebay_condition を取得
+            final_ebay_condition = best_item.get('ebay_condition', ebay_condition)
 
             item_data = {
                 "product_name": final_name,
@@ -648,10 +650,9 @@ def main():
                 "uk_shipping_jpy": locals().get('calculated_uk_shipping_jpy', 0),
                 "source_url": best_item.get("page_url", ""),
                 "is_high_tariff": high_tariff_flag,
-                "condition": ebay_condition
+                "condition": final_ebay_condition
             }
 
-            # Excel書き込み実行
             write_to_excel(item_data)
         else:
             print("\n[!] 国内最安値が見つからなかったため、Excelへの書き込みをスキップします。")
