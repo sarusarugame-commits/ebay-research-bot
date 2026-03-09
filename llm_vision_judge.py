@@ -2,7 +2,12 @@ import requests
 import json
 import re
 import base64
+import google.generativeai as genai
 from config import OPENROUTER_API_KEY, GEMINI_API_KEY
+
+# Gemini API の初期化
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
 def estimate_weight_with_llm(ebay_img_url, final_name):
     """
@@ -466,3 +471,82 @@ def _verify_model_match_with_gemini(ref_img_url, candidate_img_url, prompt):
     except Exception as e:
         print(f"    [LLM/Gemini] フォールバック失敗: {e}")
     return True
+def judge_match_and_condition(ebay_img_url, domestic_img_url, domestic_condition_text, model_number):
+    """
+    Gemini API を用いて、eBay画像と国内画像が「同じ型番・モデルか」を一判定し、
+    同時に「最適なeBayコンディション」を選択させる。
+    """
+    if not GEMINI_API_KEY:
+        print("    [WARN] GEMINI_API_KEY未設定のため詳細判定をスキップ")
+        return {"match": True, "condition": "Good", "reason": "APIキー未設定のため自動通過"}
+
+    prompt = f"""
+    あなたはプロのeBayセラー兼鑑定士です。以下の2枚の画像を比較し、正確な鑑定を行ってください。
+
+    【鑑定する型番/モデル】: {model_number}
+
+    【国内サイトの商品説明テキスト】:
+    {domestic_condition_text}
+
+    【タスク1: 同一性判定】
+    画像1（eBay参照画像）と画像2（国内候補画像）を比較し、これらが「完全に同じ型番・モデル・カラー」であるか判定してください。
+    - ロゴの配置、文字盤のデザイン、ベゼルの形状、ボタンの位置、独特な模様などを細部まで確認すること。
+    - 色違いや世代違いは "match": false としてください。
+
+    【タスク2: コンディション判定】
+    画像2の状態と商品説明テキストから、eBayの出品に最適なコンディションを以下から1つ選んでください。
+    - Brand new (新品・未開封)
+    - Like New (未使用に近い)
+    - Very Good (目立った傷なし、非常に良い中古)
+    - Good (一般的な中古、やや傷あり)
+    - Acceptable (かなりの使用感、目立つ傷あり、動作に問題なし)
+    - For parts or not working (故障品、パーツ取り)
+
+    回答は必ず以下のJSON形式のみで返してください（解説は不要です）。
+    {{
+        "match": true/false,
+        "condition": "選択したコンディション名",
+        "reason": "不一致の場合の短い理由"
+    }}
+    """
+
+    try:
+        # 画像のダウンロード（Gemini APIに渡すため）
+        def download_img(url):
+            r = requests.get(url, timeout=10)
+            if r.status_code == 200:
+                return r.content
+            return None
+
+        img_data1 = download_img(ebay_img_url)
+        img_data2 = download_img(domestic_img_url)
+
+        if not img_data1 or not img_data2:
+            raise Exception("画像のダウンロードに失敗しました。")
+
+        # 司令官ご指定の最新モデル gemini-2.0-flash (または 1.5 flash) を使用
+        # ライブラリのバージョンによってはモデル名の指定が必要
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        response = model.generate_content([
+            {'mime_type': 'image/jpeg', 'data': img_data1},
+            {'mime_type': 'image/jpeg', 'data': img_data2},
+            prompt
+        ])
+        
+        text = response.text.strip()
+        # JSON部分を抽出
+        json_match = re.search(r'\{.*\}', text, re.DOTALL)
+        if json_match:
+            data = json.loads(json_match.group())
+            return {
+                "match": bool(data.get("match", False)),
+                "condition": data.get("condition", "Good"),
+                "reason": data.get("reason", "不明")
+            }
+        
+        return {"match": True, "condition": "Good", "reason": "JSONパース失敗のためデフォルト通過"}
+
+    except Exception as e:
+        print(f"    [!] 同時判定中に例外発生: {e}")
+        return {"match": True, "condition": "Good", "reason": f"エラー回避: {e}"}

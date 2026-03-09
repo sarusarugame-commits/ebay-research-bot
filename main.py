@@ -34,7 +34,8 @@ from vision_search import find_similar_images_on_web
 from llm_namer import extract_product_name
 from shopping_api import search_rakuten, search_yahoo, scrape_yahoo_item
 from amazon_scraper import search_amazon, search_amazon_via_google, scrape_amazon_specs
-from llm_vision_judge import verify_model_match
+from llm_vision_judge import verify_model_match, judge_match_and_condition
+from excel_writer import write_to_excel
 
 def extract_specs_from_text(text):
     w, d = "不明", "不明"
@@ -509,38 +510,39 @@ def main():
 
         best_item = tentative_best_item
 
-        # ===== 国内最安値のLLM型番検証 =====
+        # ===== 国内最安値のLLM検証（同一性＋コンディション判定） =====
+        ebay_condition = "Good" # デフォルト
         if best_item and name_data.get("model"):
             model_number = name_data.get("model", "")
-            print(f"\n[*] 国内最安値商品をLLMで型番検証中（型番: {model_number}）...")
+            print(f"\n[*] 国内最安値商品をLLMで詳細検証中（型番: {model_number}）...")
 
             sorted_candidates = sorted(final_candidates, key=lambda x: x.get("total_price", float('inf')))
 
             best_item = None
             for cand in sorted_candidates:
-                cand_img = None
-                cand_imgs = cand.get("img_urls", [])
-                if cand_imgs:
-                    cand_img = cand_imgs[0]
-                elif cand.get("img_url"):
-                    cand_img = cand.get("img_url")
+                cand_img = cand.get("img_urls", [None])[0] or cand.get("img_url")
 
                 if not cand_img:
                     print(f"    [LLM] 画像URLなし → 通過扱い: {cand.get('title','')[:30]}")
                     best_item = cand
                     break
 
-                is_match = verify_model_match(img_url, cand_img, model_number)
-                if is_match:
+                # 同一性とコンディションを同時に判定
+                domestic_desc = cand.get("description", "") + " " + cand.get("title", "")
+                result = judge_match_and_condition(img_url, cand_img, domestic_desc, model_number)
+                
+                if result.get("match"):
                     best_item = cand
+                    ebay_condition = result.get("condition", "Good")
                     print(f"    [LLM OK] 国内最安値確定: ¥{cand.get('total_price',0):,} / {cand.get('title','')[:30]}")
+                    print(f"    [*] AI判定によるeBayコンディション: {ebay_condition}")
                     break
                 else:
-                    print(f"    [LLM REJECT] 型番不一致 → 次点へ繰り上げ: {cand.get('title','')[:40]}")
+                    print(f"    [LLM REJECT] 型番不一致 → 次点へ繰り上げ: {cand.get('title','')[:40]} | 理由: {result.get('reason')}")
 
             if not best_item:
                 print("    [!] LLM検証で全候補が除外されました。最安値なしとして処理します。")
-        # ====================================
+        # ============================================================
         if best_item:
             database.mark_as_researched(
                 item_id, 
@@ -620,9 +622,39 @@ def main():
                             print(f"    - URL:      {res['item_url']}")
             else:
                 print("[!] eBay APIトークンが取得できなかったため、競合チェックをスキップします。")
+        # 6. Excelへの自動書き込み
+        if best_item:
+            # 書き込み用データの整形
+            # 寸法（XXxXXxXXmm）から数値を抽出
+            def ext_dim(d_str, idx):
+                nums = re.findall(r"\d+", d_str)
+                return nums[idx] if len(nums) > idx else ""
 
+            # 重量を数値のみ抽出
+            def ext_weight(w_str):
+                match = re.search(r"\d+", w_str.replace(",", ""))
+                return match.group() if match else ""
+
+            item_data = {
+                "product_name": final_name,
+                "length": ext_dim(dims_final, 0),
+                "width": ext_dim(dims_final, 1),
+                "height": ext_dim(dims_final, 2),
+                "weight": ext_weight(weight_final),
+                "domestic_price": best_item.get("total_price", 0),
+                "us_top3_prices": [item["total_usd"] for item in us_top3] if 'us_top3' in locals() else [],
+                "uk_top3_prices": [item["total_usd"] for item in uk_top3] if 'uk_top3' in locals() else [],
+                "us_shipping_jpy": locals().get('calculated_us_shipping_jpy', 0),
+                "uk_shipping_jpy": locals().get('calculated_uk_shipping_jpy', 0),
+                "source_url": best_item.get("page_url", ""),
+                "is_high_tariff": high_tariff_flag,
+                "condition": ebay_condition
+            }
+
+            # Excel書き込み実行
+            write_to_excel(item_data)
         else:
-            database.mark_as_researched(item_id, weight=weight_final, dimensions=dims_final)
+            print("\n[!] 国内最安値が見つからなかったため、Excelへの書き込みをスキップします。")
 
         print("\n" + "="*60)
         print("                 ✨ リサーチ完了 ✨")
