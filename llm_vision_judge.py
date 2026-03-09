@@ -1,13 +1,208 @@
 import requests
 import json
-import re
 import base64
-import google.generativeai as genai
+import re
+import time
+import os
+import datetime
+import functools
+import unicodedata
+import sys
+import select # ユーザー入力待機用
+
+# printを即時出力（バッファリング無効）にする
+print = functools.partial(print, flush=True)
+
+try:
+    import google.generativeai as genai
+except ImportError:
+    genai = None
+
 from config import OPENROUTER_API_KEY, GEMINI_API_KEY
 
-# Gemini API の初期化
-if GEMINI_API_KEY:
+if GEMINI_API_KEY and genai:
     genai.configure(api_key=GEMINI_API_KEY)
+
+def show_os_notification(title, message):
+    """OS通知を表示する（Windows想定）"""
+    try:
+        from plyer import notification
+        notification.notify(
+            title=title,
+            message=message,
+            app_name='eBay Research Bot',
+            timeout=10
+        )
+    except Exception:
+        # plyerがない場合はPowerShell経由で通知（バルーン通知）
+        try:
+            os.system(f'powershell -Command "[Reflection.Assembly]::LoadWithPartialName(\'System.Windows.Forms\'); $n = New-Object System.Windows.Forms.NotifyIcon; $n.Icon = [System.Drawing.SystemIcons]::Information; $n.Visible = $True; $n.ShowBalloonTip(5000, \'{title}\', \'{message}\', [System.Windows.Forms.ToolTipIcon]::Info)"')
+        except:
+            pass
+
+def wait_for_user_retry():
+    """
+    ユーザーのエンターキー入力を無期限で待機する。
+    """
+    print(f"\n[!] タイムアウトまたはエラーが発生しました。")
+    print(f"    >>> 再試行するには 【エンターキー】 を押してください（ユーザー入力待ち）...")
+    
+    show_os_notification("LLM検証エラー", "Geminiが応答しません。再試行するにはターミナルでエンターを押してください。")
+    
+    start_time = time.time()
+    while True:
+        elapsed = int(time.time() - start_time)
+        sys.stdout.write(f"\r    待機継続中: {elapsed}s 経過 ... (Enterで再試行) ")
+        sys.stdout.flush()
+        
+        # Windows/Posix両対応の非ブロッキング入力待機
+        if os.name == 'nt':
+            import msvcrt
+            if msvcrt.kbhit():
+                key = msvcrt.getch()
+                if key in [b'\r', b'\n']:
+                    print("\n    [*] ユーザー入力を受け付けました。再試行を開始します。")
+                    return True
+        else:
+            rlist, _, _ = select.select([sys.stdin], [], [], 0.1)
+            if rlist:
+                sys.stdin.readline()
+                print("\n    [*] ユーザー入力を受け付けました。再試行を開始します。")
+                return True
+        time.sleep(0.1)
+
+def judge_similarity_with_llm(ebay_img_url, scraped_items):
+    """
+    OpenRouter (Gemma 3) のVision機能を用いて、
+    eBay元画像とスクレイピングしたメルカリ画像を直接比較し、
+    同一商品の可能性を0〜100のスコアで返す。
+    """
+    if not OPENROUTER_API_KEY:
+        print("WARNING: OPENROUTER_API_KEYが設定されていないため、LLM画像判定をスキップします。")
+        return scraped_items
+        
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://github.com/eBayResearchSystem",
+        "X-Title": "eBay Research System"
+    }
+
+    results = []
+    # 最大5件に制限
+    items_to_judge = scraped_items[:5]
+    print(f"\n[*] LLM (Gemma 3) を用いた画像比較を開始します（合計 {len(items_to_judge)}件）...")
+
+    for item in items_to_judge:
+        time.sleep(3)
+        
+        mercari_img_url = item.get("img_url")
+        if not mercari_img_url:
+            item["score"] = 0
+            results.append(item)
+            continue
+            
+        combined_prompt = (
+            "あなたはプロの真贋鑑定士・ECリサーチャーです。以下の指示に従って2つの画像を比較してください。\n\n"
+            "【指示】\n"
+            "2つの商品画像（画像1: eBayの元画像、画像2: Web検索の候補画像）を比較し、これらが「完全に同一の型番・モデルの商品」である確率を、0から100の数値（スコア）で判定してください。\n"
+            "【注意点】\n"
+            "- 背景、照明、撮影角度、付属品や箱の有無などは無視してください。\n"
+            "- 本体の形状、テクスチャ、ロゴの配置、文字盤のデザインなど「物理的な製品特徴」が一致しているかを厳格に見てください。\n"
+            "- 同一製品の別カラーバリエーションは「同一モデル」ではないため、低いスコア（0〜10点）にしてください。\n\n"
+            "出力は必ずスコアの数値（例：85）のみとし、文章や理由は一切含めないでください。\n\n"
+            "画像1（eBayの元画像）と画像2（候補画像）を比較し、同じ商品モデルである確率のスコアを出力せよ。"
+        )
+        
+        payload = {
+            "model": "google/gemma-3-27b-it:free",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": combined_prompt},
+                        {"type": "image_url", "image_url": {"url": ebay_img_url}},
+                        {"type": "image_url", "image_url": {"url": mercari_img_url}}
+                    ]
+                }
+            ],
+            "temperature": 0.0
+        }
+
+        try:
+            print(f"  -> 画像比較中: {mercari_img_url[:60]}...")
+            score = 0
+            response = requests.post(url, headers=headers, json=payload, timeout=20)
+            if response.status_code == 200:
+                result_data = response.json()
+                content = result_data["choices"][0]["message"]["content"].strip()
+                match = re.search(r'\d+', content)
+                score = int(match.group()) if match else 0
+                print(f"    [LLM/Gemma] 類似度スコア: {score}")
+            elif response.status_code == 429:
+                print(f"     [!] Rate limit (429) 検出。Gemini API でリトライします...")
+                score = judge_similarity_with_gemini(ebay_img_url, mercari_img_url, combined_prompt)
+            else:
+                print(f"     [!] エラー: {response.status_code} - {response.text}")
+                score = judge_similarity_with_gemini(ebay_img_url, mercari_img_url, combined_prompt)
+                
+        except Exception as e:
+            print(f"     [!] リクエスト失敗: {e}")
+            score = judge_similarity_with_gemini(ebay_img_url, mercari_img_url, combined_prompt)
+
+        item["score"] = score
+        results.append(item)
+
+    results.sort(key=lambda x: x.get("score", 0), reverse=True)
+    return results
+
+def judge_similarity_with_gemini(ebay_img_url, mercari_img_url, prompt):
+    """画像類似度判定のGeminiフォールバック（リトライ対応）"""
+    if not GEMINI_API_KEY: return 0
+    
+    model = "gemini-3.1-flash-lite-preview"
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+    
+    # max_retries = 2
+    while True:
+        try:
+            resp1 = requests.get(ebay_img_url, timeout=10)
+            resp2 = requests.get(mercari_img_url, timeout=10)
+            if resp1.status_code != 200 or resp2.status_code != 200:
+                if wait_for_user_retry(): continue
+                # ユーザーが中断を選択した場合はスコア0で返す
+                return 0
+            
+            data1 = base64.b64encode(resp1.content).decode('utf-8')
+            data2 = base64.b64encode(resp2.content).decode('utf-8')
+            mime1 = resp1.headers.get('Content-Type', 'image/jpeg')
+            mime2 = resp2.headers.get('Content-Type', 'image/jpeg')
+
+            payload = {
+                "contents": [{
+                    "parts": [
+                        {"text": prompt},
+                        {"inline_data": {"mime_type": mime1, "data": data1}},
+                        {"inline_data": {"mime_type": mime2, "data": data2}}
+                    ]
+                }]
+            }
+            resp = requests.post(api_url, json=payload, timeout=20)
+            if resp.status_code == 200:
+                text = resp.json()['candidates'][0]['content']['parts'][0]['text'].strip()
+                match = re.search(r'\d+', text)
+                return int(match.group()) if match else 0
+            elif resp.status_code == 429:
+                print(f"    [LLM/Gemini] 429 Error (Rate Limit)")
+                time.sleep(5)
+            
+            if wait_for_user_retry(): continue
+        except Exception as e:
+            print(f"    [!] Gemini類似度判定中に例外発生: {e}")
+            if wait_for_user_retry(): continue
+                
+    return 0
 
 def estimate_weight_with_llm(ebay_img_url, final_name):
     """
@@ -53,17 +248,16 @@ def estimate_weight_with_llm(ebay_img_url, final_name):
         response = requests.post(url, headers=headers, json=payload, timeout=20)
         if response.status_code == 200:
             content = response.json()["choices"][0]["message"]["content"].strip()
-            # JSONを抽出してパース
             json_match = re.search(r'\{.*\}', content, re.DOTALL)
             if json_match:
                 data = json.loads(json_match.group())
+                print(f"    [LLM/Gemma] 推論結果: {data}")
                 return {
                     "weight": data.get("weight", "不明"),
                     "dimensions": data.get("dimensions", "不明")
                 }
             else:
-                print(f"    [!] JSONの抽出に失敗しました。応答内容: {content[:100]}...")
-                raise ValueError("JSON not found in response")
+                raise ValueError("JSON not found")
         else:
             print(f"    [!] OpenRouter Error ({response.status_code}): {response.text}")
             print(f"    [*] Gemini API でリトライします...")
@@ -74,35 +268,55 @@ def estimate_weight_with_llm(ebay_img_url, final_name):
         return estimate_weight_with_gemini(ebay_img_url, final_name, prompt)
 
 def estimate_weight_with_gemini(ebay_img_url, final_name, prompt):
-    """スペック推論のGeminiフォールバック"""
+    """スペック推論のGeminiフォールバック（リトライ対応）"""
     if not GEMINI_API_KEY: return {"weight": "不明", "dimensions": "不明"}
-    try:
-        img_resp = requests.get(ebay_img_url, timeout=10)
-        if img_resp.status_code != 200: return {"weight": "不明", "dimensions": "不明"}
-        img_data = base64.b64encode(img_resp.content).decode('utf-8')
-        mime_type = img_resp.headers.get('Content-Type', 'image/jpeg')
+    
+    model = "gemini-3.1-flash-lite-preview"
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+    
+    # max_retries = 2
+    while True:
+        try:
+            print(f"    [*] Geminiスペック推論用画像ダウンロード中...")
+            img_resp = requests.get(ebay_img_url, timeout=10)
+            if img_resp.status_code != 200: 
+                print(f"    [!] 画像ダウンロード失敗: {img_resp.status_code}")
+                if wait_for_user_retry(): continue
+                return {"weight": "不明", "dimensions": "不明"}
+            
+            img_data = base64.b64encode(img_resp.content).decode('utf-8')
+            mime_type = img_resp.headers.get('Content-Type', 'image/jpeg')
 
-        model = "gemini-3.1-flash-lite-preview"
-        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
-        payload = {
-            "contents": [{
-                "parts": [{"text": prompt}, {"inline_data": {"mime_type": mime_type, "data": img_data}}]
-            }]
-        }
-        resp = requests.post(api_url, json=payload, timeout=20)
-        if resp.status_code == 200:
-            res_json = resp.json()
-            text_content = res_json['candidates'][0]['content']['parts'][0]['text'].strip()
-            # JSON部分を抽出
-            json_match = re.search(r'\{.*\}', text_content, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group())
-                return {
-                    "weight": data.get("weight", "不明"),
-                    "dimensions": data.get("dimensions", "不明")
-                }
-    except Exception as e:
-        print(f"    [!] Geminiスペック推論失敗: {e}")
+            payload = {
+                "contents": [{
+                    "parts": [{"text": prompt}, {"inline_data": {"mime_type": mime_type, "data": img_data}}]
+                }]
+            }
+            print(f"    [*] Gemini API 呼び出し中 (timeout=20)...")
+            resp = requests.post(api_url, json=payload, timeout=20)
+            
+            if resp.status_code == 200:
+                res_json = resp.json()
+                text_content = res_json['candidates'][0]['content']['parts'][0]['text'].strip()
+                json_match = re.search(r'\{.*\}', text_content, re.DOTALL)
+                if json_match:
+                    data = json.loads(json_match.group())
+                    print(f"    [LLM/Gemini] 推論結果: {data}")
+                    return {
+                        "weight": data.get("weight", "不明"),
+                        "dimensions": data.get("dimensions", "不明")
+                    }
+            elif resp.status_code == 429:
+                print(f"    [LLM/Gemini] 429 Error (Rate Limit)")
+                time.sleep(5)
+            else:
+                print(f"    [LLM/Gemini] API Error ({resp.status_code}): {resp.text}")
+
+            if wait_for_user_retry(): continue
+        except Exception as e:
+            print(f"    [!] Geminiスペック推論中に例外発生: {e}")
+            if wait_for_user_retry(): continue
+    
     return {"weight": "不明", "dimensions": "不明"}
 
 def analyze_item_safety_and_tariff(ebay_img_url):
@@ -129,7 +343,7 @@ def analyze_item_safety_and_tariff(ebay_img_url):
     )
 
     payload = {
-        "model": "google/gemma-3-27b-it:free", # ご安心を！フリーモデルを使用します！
+        "model": "google/gemma-3-27b-it:free",
         "messages": [
             {
                 "role": "user",
@@ -144,221 +358,80 @@ def analyze_item_safety_and_tariff(ebay_img_url):
 
     try:
         print(f"[*] Gemma 3 が商品の安全性をチェックしています（アルコール/高関税素材）...")
-        response = requests.post(url, headers=headers, json=payload, timeout=15)
+        response = requests.post(url, headers=headers, json=payload, timeout=20)
         if response.status_code == 200:
             content = response.json()["choices"][0]["message"]["content"].strip()
-            # JSONを抽出してパース
             json_match = re.search(r'\{.*\}', content, re.DOTALL)
             if json_match:
                 data = json.loads(json_match.group())
+                print(f"    [LLM/Gemma] 安全性判定結果: {data}")
                 return {
                     "is_alcohol": data.get("is_alcohol", False),
                     "is_high_tariff": data.get("is_high_tariff", False),
                     "label": data.get("material_label", "なし")
                 }
             else:
-                print(f"    [!] JSONの抽出に失敗しました。応答内容: {content[:100]}...")
-                raise ValueError("JSON not found in response")
+                raise ValueError("JSON not found")
         else:
             print(f"     [!] OpenRouter Error ({response.status_code}): {response.text}")
-            print(f"     [*] Gemini API でリトライします...")
+            print(f"     [*] Gemini API で判定をリトライします...")
             return analyze_item_safety_with_gemini(ebay_img_url, prompt)
             
     except Exception as e:
         print(f"     [!] 安全性チェック中に例外発生: {e}")
-        print(f"     [*] Gemini API でリトライします...")
+        print(f"     [*] Gemini API で判定をリトライします...")
         return analyze_item_safety_with_gemini(ebay_img_url, prompt)
 
 def analyze_item_safety_with_gemini(ebay_img_url, prompt):
-    """
-    OpenRouterが制限にかかった際のバックアップ。
-    Gemini API を直接叩いて判定を行う。
-    """
+    """安全性判定のGeminiフォールバック"""
     if not GEMINI_API_KEY:
-        return {"is_alcohol": False, "is_high_tariff": False, "label": "Gemini APIキー未設定"}
+        return {"is_alcohol": False, "is_high_tariff": False, "label": "不明"}
 
-    try:
-        # 1. 画像をダウンロード
-        img_resp = requests.get(ebay_img_url, timeout=10)
-        if img_resp.status_code != 200:
-            return {"is_alcohol": False, "is_high_tariff": False, "label": "画像DL失敗(Gemini)"}
-        
-        img_data = base64.b64encode(img_resp.content).decode('utf-8')
-        mime_type = img_resp.headers.get('Content-Type', 'image/jpeg')
+    model = "gemini-3.1-flash-lite-preview"
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
 
-        # 2. Gemini API 呼び出し (v1beta)
-        # 司令官のご指定通り gemini-3.1-flash-lite-preview を使用！
-        model = "gemini-3.1-flash-lite-preview"
-        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
-        
-        payload = {
-            "contents": [{
-                "parts": [
-                    {"text": prompt},
-                    {
-                        "inline_data": {
-                            "mime_type": mime_type,
-                            "data": img_data
-                        }
-                    }
-                ]
-            }]
-        }
-
-        resp = requests.post(api_url, json=payload, timeout=20)
-        if resp.status_code == 200:
-            res_json = resp.json()
-            text_content = res_json['candidates'][0]['content']['parts'][0]['text'].strip()
-            
-            # JSON部分を抽出
-            json_match = re.search(r'\{.*\}', text_content, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group())
-                return {
-                    "is_alcohol": data.get("is_alcohol", False),
-                    "is_high_tariff": data.get("is_high_tariff", False),
-                    "label": data.get("material_label", "なし")
-                }
-        else:
-            print(f"     [!] Gemini API エラー: {resp.status_code} - {resp.text}")
-
-    except Exception as e:
-        print(f"     [!] Gemini 回避判定失敗: {e}")
-
-    return {"is_alcohol": False, "is_high_tariff": False, "label": "Gemini判定エラー"}
-
-def judge_similarity_with_llm(ebay_img_url, scraped_items):
-    """
-    OpenRouter (Gemma 3) のVision機能を用いて、
-    eBay元画像とスクレイピングしたメルカリ画像を直接比較し、
-    同一商品の可能性を0〜100のスコアで返す。
-    """
-    if not OPENROUTER_API_KEY:
-        print("WARNING: OPENROUTER_API_KEYが設定されていないため、LLM画像判定をスキップします。")
-        return scraped_items
-        
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/eBayResearchSystem",
-        "X-Title": "eBay Research System"
-    }
-
-    results = []
-    # 最大5件に制限
-    items_to_judge = scraped_items[:5]
-    print(f"\n[*] LLM (Gemma 3) を用いた画像比較を開始します（合計 {len(items_to_judge)}件）...")
-
-    for item in items_to_judge:
-        # 20 RPM (1分間に20回) 制限のため3秒待機
-        import time
-        time.sleep(3)
-        
-        mercari_img_url = item.get("img_url")
-        if not mercari_img_url:
-            item["score"] = 0
-            results.append(item)
-            continue
-            
-        # Gemma 3 (Google AI Studio) は system ロールをサポートしていない場合があるため、user に統合する
-        combined_prompt = (
-            "あなたはプロの真贋鑑定士・ECリサーチャーです。以下の指示に従って2つの画像を比較してください。\n\n"
-            "【指示】\n"
-            "2つの商品画像（画像1: eBayの元画像、画像2: Web検索の候補画像）を比較し、これらが「完全に同一の型番・モデルの商品」である確率を、0から100の数値（スコア）で判定してください。\n"
-            "【注意点】\n"
-            "- 背景、照明、撮影角度、付属品や箱の有無などは無視してください。\n"
-            "- 本体の形状、テクスチャ、ロゴの配置、文字盤のデザインなど「物理的な製品特徴」が一致しているかを厳格に見てください。\n"
-            "- 同一製品の別カラーバリエーションは「同一モデル」ではないため、低いスコア（0〜10点）にしてください。\n\n"
-            "出力は必ずスコアの数値（例：85）のみとし、文章や理由は一切含めないでください。\n\n"
-            "画像1（eBayの元画像）と画像2（候補画像）を比較し、同じ商品モデルである確率のスコアを出力せよ。"
-        )
-        
-        payload = {
-            "model": "google/gemma-3-27b-it:free",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": combined_prompt},
-                        {"type": "image_url", "image_url": {"url": ebay_img_url}},
-                        {"type": "image_url", "image_url": {"url": mercari_img_url}}
-                    ]
-                }
-            ],
-            "temperature": 0.0
-        }
-
+    # max_retries = 2
+    while True:
         try:
-            print(f"  -> 画像比較中: {mercari_img_url[:60]}...")
+            print(f"    [*] Gemini安全性判定用画像ダウンロード中...")
+            r = requests.get(ebay_img_url, timeout=10)
+            if r.status_code != 200:
+                print(f"    [!] 画像ダウンロード失敗: {r.status_code}")
+                if wait_for_user_retry(): continue
+                return {"is_alcohol": False, "is_high_tariff": False, "label": "不明"}
+
+            img_data = base64.b64encode(r.content).decode('utf-8')
+            payload = {
+                "contents": [{
+                    "parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": img_data}}]
+                }]
+            }
+            print(f"    [*] Gemini API 呼び出し中 (timeout=20)...")
+            resp = requests.post(api_url, json=payload, timeout=20)
+            if resp.status_code == 200:
+                res_json = resp.json()
+                text = res_json['candidates'][0]['content']['parts'][0]['text'].strip()
+                json_match = re.search(r'\{.*\}', text, re.DOTALL)
+                if json_match:
+                    data = json.loads(json_match.group())
+                    print(f"    [LLM/Gemini] 安全性判定結果: {data}")
+                    return {
+                        "is_alcohol": bool(data.get("is_alcohol", False)),
+                        "is_high_tariff": bool(data.get("is_high_tariff", False)),
+                        "label": data.get("material_label", "なし")
+                    }
+            elif resp.status_code == 429:
+                print(f"    [LLM/Gemini] 429 Error (Rate Limit)")
+                time.sleep(5)
+            else:
+                print(f"    [LLM/Gemini] API Error ({resp.status_code}): {resp.text}")
             
-            score = 0
-            for attempt in range(3):
-                response = requests.post(url, headers=headers, json=payload)
-                if response.status_code == 200:
-                    result_data = response.json()
-                    if "choices" in result_data and len(result_data["choices"]) > 0:
-                        if attempt > 0:
-                            print(f"     [*] リトライに成功しました。")
-                        content = result_data["choices"][0]["message"]["content"].strip()
-                        # 数字のみを抽出
-                        match = re.search(r'\d+', content)
-                        if match:
-                            score = int(match.group())
-                        break
-                elif response.status_code == 429:
-                    print(f"     [!] Rate limit (429) 検出。Gemini API でリトライします...")
-                    score = judge_similarity_with_gemini(ebay_img_url, mercari_img_url, combined_prompt)
-                    break
-                else:
-                    print(f"     [!] エラー: {response.status_code} - {response.text}")
-                    break
-                
+            if wait_for_user_retry(): continue
         except Exception as e:
-            print(f"     [!] リクエスト失敗: {e}")
-            score = 0
+            print(f"    [LLM/Gemini] 例外発生: {e}")
+            if wait_for_user_retry(): continue
 
-        item["score"] = score
-        results.append(item)
-
-    # スコアの降順でソート
-    results.sort(key=lambda x: x.get("score", 0), reverse=True)
-    return results
-
-def judge_similarity_with_gemini(ebay_img_url, mercari_img_url, prompt):
-    """画像類似度判定のGeminiフォールバック"""
-    if not GEMINI_API_KEY: return 0
-    try:
-        # 1. 2つの画像をダウンロード
-        resp1 = requests.get(ebay_img_url, timeout=10)
-        resp2 = requests.get(mercari_img_url, timeout=10)
-        if resp1.status_code != 200 or resp2.status_code != 200: return 0
-        
-        data1 = base64.b64encode(resp1.content).decode('utf-8')
-        data2 = base64.b64encode(resp2.content).decode('utf-8')
-        mime1 = resp1.headers.get('Content-Type', 'image/jpeg')
-        mime2 = resp2.headers.get('Content-Type', 'image/jpeg')
-
-        model = "gemini-3.1-flash-lite-preview"
-        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
-        
-        payload = {
-            "contents": [{
-                "parts": [
-                    {"text": prompt},
-                    {"inline_data": {"mime_type": mime1, "data": data1}},
-                    {"inline_data": {"mime_type": mime2, "data": data2}}
-                ]
-            }]
-        }
-        resp = requests.post(api_url, json=payload, timeout=20)
-        if resp.status_code == 200:
-            text = resp.json()['candidates'][0]['content']['parts'][0]['text'].strip()
-            match = re.search(r'\d+', text)
-            return int(match.group()) if match else 0
-    except Exception as e:
-        print(f"    [!] Gemini類似度判定失敗: {e}")
-    return 0
+    return {"is_alcohol": False, "is_high_tariff": False, "label": "不明"}
 
 def verify_model_match(ref_img_url, candidate_img_url, model_number, condition_text):
     """
@@ -420,7 +493,6 @@ def verify_model_match(ref_img_url, candidate_img_url, model_number, condition_t
     try:
         print(f"    [LLM] 型番一致・状態判定中: {model_number}...")
         resp = requests.post(url, headers=headers, json=payload, timeout=20)
-
         if resp.status_code == 200:
             content = resp.json()["choices"][0]["message"]["content"].strip()
             json_match = re.search(r'\{.*\}', content, re.DOTALL)
@@ -433,57 +505,80 @@ def verify_model_match(ref_img_url, candidate_img_url, model_number, condition_t
                 label = "✅ 一致" if is_match else "❌ 不一致"
                 print(f"    [LLM] {label} | 判定状態: {ebay_condition} | 理由: {reason}")
                 return is_match, ebay_condition
-            
-            return True, "Good" # JSONパース失敗時は通過
-
+            else:
+                raise ValueError("JSON not found")
         else:
             print(f"    [LLM] OpenRouter Error ({resp.status_code}) 詳細: {resp.text}")
             print(f"    [*] Gemini API でリトライします...")
             return _verify_model_match_with_gemini(ref_img_url, candidate_img_url, prompt)
-
     except Exception as e:
         print(f"    [LLM] 型番判定中に例外発生: {e}")
         print(f"    [*] Gemini API でリトライします...")
         return _verify_model_match_with_gemini(ref_img_url, candidate_img_url, prompt)
 
-
 def _verify_model_match_with_gemini(ref_img_url, candidate_img_url, prompt):
-    """verify_model_matchのGeminiフォールバック"""
+    """verify_model_matchのGeminiフォールバック（requests使用）"""
     if not GEMINI_API_KEY:
         return True, "Good"
-    try:
-        def download_img(url):
-            r = requests.get(url, timeout=10)
-            if r.status_code == 200:
-                return r.content
-            return None
-
-        img_data1 = download_img(ref_img_url)
-        img_data2 = download_img(candidate_img_url)
-
-        if not img_data1 or not img_data2:
-            return True, "Good"
-
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content([
-            {'mime_type': 'image/jpeg', 'data': img_data1},
-            {'mime_type': 'image/jpeg', 'data': img_data2},
-            prompt
-        ])
         
-        text = response.text.strip()
-        json_match = re.search(r'\{.*\}', text, re.DOTALL)
-        if json_match:
-            data = json.loads(json_match.group())
-            is_match = bool(data.get("match", False))
-            ebay_condition = data.get("condition", "Good")
-            reason = data.get("reason", "不明")
-            
-            label = "✅ 一致" if is_match else "❌ 不一致"
-            print(f"    [LLM/Gemini] {label} | 判定状態: {ebay_condition} | 理由: {reason}")
-            return is_match, ebay_condition
-            
-    except Exception as e:
-        print(f"    [LLM/Gemini] フォールバック判定失敗: {e}")
-    return True, "Good"
+    model = "gemini-3.1-flash-lite-preview"
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+    
+    # max_retries = 2
+    while True:
+        try:
+            def download_img(url):
+                r = requests.get(url, timeout=10)
+                if r.status_code == 200:
+                    return base64.b64encode(r.content).decode('utf-8')
+                return None
 
+            print(f"    [*] Gemini型番検証用画像ダウンロード中...")
+            data1 = download_img(ref_img_url)
+            data2 = download_img(candidate_img_url)
+
+            if not data1 or not data2:
+                print(f"    [LLM/Gemini] 画像ダウンロード失敗")
+                if wait_for_user_retry(): continue
+                return True, "Good"
+
+            payload = {
+                "contents": [{
+                    "parts": [
+                        {"text": prompt},
+                        {"inline_data": {"mime_type": "image/jpeg", "data": data1}},
+                        {"inline_data": {"mime_type": "image/jpeg", "data": data2}}
+                    ]
+                }]
+            }
+            
+            print(f"    [*] Gemini API 呼び出し中 (timeout=20)...")
+            resp = requests.post(api_url, json=payload, timeout=20)
+            
+            if resp.status_code == 200:
+                res_json = resp.json()
+                text = res_json['candidates'][0]['content']['parts'][0]['text'].strip()
+                json_match = re.search(r'\{.*\}', text, re.DOTALL)
+                if json_match:
+                    data = json.loads(json_match.group())
+                    is_match = bool(data.get("match", False))
+                    ebay_condition = data.get("condition", "Good")
+                    reason = data.get("reason", "不明")
+                    
+                    label = "✅ 一致" if is_match else "❌ 不一致"
+                    print(f"    [LLM/Gemini] {label} | 判定状態: {ebay_condition} | 理由: {reason}")
+                    return is_match, ebay_condition
+                print(f"    [LLM/Gemini] JSONパース失敗")
+            elif resp.status_code == 429:
+                print(f"    [LLM/Gemini] 429 Error (Rate Limit)")
+                time.sleep(5)
+            else:
+                print(f"    [LLM/Gemini] API Error ({resp.status_code}): {resp.text}")
+
+            if wait_for_user_retry(): continue
+
+        except Exception as e:
+            print(f"    [LLM/Gemini] 例外発生: {e}")
+            if wait_for_user_retry(): continue
+                
+    return True, "Good"

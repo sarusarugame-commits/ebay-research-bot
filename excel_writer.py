@@ -3,94 +3,204 @@ import unicodedata
 import openpyxl
 from openpyxl.styles import Font
 
-# ＝各種設定＝
 EXCEL_PATH = r"G:\マイドライブ\Python_code\eBayリサーチ部隊\リサーチシート完全版 のコピー.xlsx"
-SHEET_NAME = "3月"
+SHEET_NAME = "3月 のコピー"
 
-FEE_RATE = 0.28        # Excelシートの関数に合わせた手数料率(28%)
-TARGET_MARGIN = 0.06   # 目標利益率(6%)
+TARGET_MARGIN = 0.06
+
+US_SHIPPING_TABLE = {
+    500: 2060, 1000: 3221.4, 1500: 3433.3, 2000: 3606.2,
+    3000: 4386.2, 4000: 4982.9, 5000: 6047.6, 6000: 6997.9,
+    7000: 8045.7, 8000: 8513.7, 9000: 8983, 10000: 11264.5
+}
+UK_SHIPPING_TABLE = {
+    500: 1571, 1000: 2908.1, 1500: 3383.9, 2000: 3802.5,
+    3000: 4253.6, 4000: 4699.5, 5000: 5452.2, 6000: 6605.3,
+    7000: 7127.9, 8000: 7650.5, 9000: 8174.4, 10000: 10067.2
+}
 
 def to_half_width(text):
-    """全角英数字を半角に変換する"""
     if text is None: return ""
     return unicodedata.normalize('NFKC', str(text))
 
-def calculate_min_sell_price(cost_jpy, shipping_jpy, exchange_rate):
-    """利益率6%を達成するための最低販売価格(USD)を逆算する"""
-    required_jpy = (cost_jpy + shipping_jpy) / (1.0 - FEE_RATE - TARGET_MARGIN)
-    return round(required_jpy / exchange_rate, 2)
+def calculate_shipping_cost(weight_g, length_cm, width_cm, height_cm, table):
+    """N列/Q列と同じ送料計算: max(実重量, 容積重量=縦×横×高さ/5) × 1.3"""
+    try:
+        vol_weight = float(length_cm) * float(width_cm) * float(height_cm) / 5.0
+        billed_weight = max(float(weight_g), vol_weight) * 1.3
+        for threshold in sorted(table.keys()):
+            if billed_weight <= threshold:
+                return table[threshold]
+        return table[10000]
+    except Exception:
+        return table[500]
 
-def adjust_price(top3_prices, min_sell_usd):
-    """Top3の中から、最低販売価格を上回っている最安値を返す（事前に安い順に並んでいる前提）"""
-    for price in top3_prices:
-        if price >= min_sell_usd:
-            return price
-    return None
+def simulate_k_us(h):
+    """US利益率計算用: スプシのKをHで置き換え"""
+    return h
 
-def write_to_excel(item_data):
+def simulate_k_uk(j):
+    """UK利益率計算用: スプシのKをJで置き換え"""
+    return j
+
+def calc_margin_us(k, l, exchange_rate, cost_jpy, shipping_jpy, is_high_tariff):
+    """M列: O / ((K+L)*為替)"""
+    tariff_rate = 0.4 if is_high_tariff else 0.2
+    profit = (k * 0.9 + l) * exchange_rate * 0.8 \
+             - k * 0.9 * tariff_rate * exchange_rate \
+             - cost_jpy - shipping_jpy
+    denom = (k + l) * exchange_rate
+    return (profit / denom) if denom else 0.0, profit
+
+def calc_margin_uk(k, exchange_rate, cost_jpy, shipping_jpy):
+    """P列: R / (K*為替)  R=K*0.9*為替*0.8 - G - Q  ※関税なし・L列なし"""
+    profit = k * 0.9 * exchange_rate * 0.8 - cost_jpy - shipping_jpy
+    denom = k * exchange_rate
+    return (profit / denom) if denom else 0.0, profit
+
+def find_min_k_for_us(exchange_rate, cost_jpy, us_shipping_jpy, is_high_tariff, target=TARGET_MARGIN):
+    """US利益率6%達成の最低K値を逆算（L=0仮定）"""
+    tariff_rate = 0.4 if is_high_tariff else 0.2
+    denom = exchange_rate * (0.9 * (0.8 - tariff_rate) - target)
+    if denom <= 0:
+        return None
+    return (cost_jpy + us_shipping_jpy) / denom
+
+def find_min_k_for_uk(exchange_rate, cost_jpy, uk_shipping_jpy, target=TARGET_MARGIN):
+    """UK利益率6%達成の最低K値を逆算（関税なし・L=0）"""
+    denom = exchange_rate * (0.72 - target)
+    if denom <= 0:
+        return None
+    return (cost_jpy + uk_shipping_jpy) / denom
+
+def write_to_sheet(item_data):
     print("\n[*] Excelシートへの書き込み処理を開始します...")
-    
-    # 1. Excelファイルの読み込みと為替レート取得
+
     try:
         wb = openpyxl.load_workbook(EXCEL_PATH)
         ws = wb[SHEET_NAME]
-        
-        # AI列(35列目)の2行目から為替レートを取得
-        exchange_rate = ws.cell(row=2, column=35).value
-        if not isinstance(exchange_rate, (int, float)):
-            exchange_rate = 150.0 
+        wb_data = openpyxl.load_workbook(EXCEL_PATH, data_only=True)
+        ws_data = wb_data[SHEET_NAME]
+        exchange_rate = ws_data.cell(row=2, column=35).value
+        if not isinstance(exchange_rate, (int, float)) or exchange_rate == 0:
+            exchange_rate = 150.0
+            print(f"    [!] 為替レート取得失敗。デフォルト {exchange_rate} 円/USD を使用。")
+        else:
+            print(f"    [*] 為替レート: {exchange_rate} 円/USD")
     except Exception as e:
-        print(f"    [!] Excelファイルの読み込みに失敗しました: {e}")
+        print(f"    [!] Excelファイルの読み込み失敗: {e}")
         return False
 
-    # 2. 利益計算シミュレーション
-    cost = float(item_data['domestic_price'])
-    min_us_usd = calculate_min_sell_price(cost, item_data['us_shipping_jpy'], exchange_rate)
-    min_uk_usd = calculate_min_sell_price(cost, item_data['uk_shipping_jpy'], exchange_rate)
+    def mm_to_cm(val):
+        try: return float(val) / 10.0
+        except: return 0.0
 
-    us_top3 = item_data['us_top3_prices']
-    uk_top3 = item_data['uk_top3_prices']
+    def safe_float(val):
+        try: return float(val)
+        except: return 0.0
 
-    adjusted_us = adjust_price(us_top3, min_us_usd)
-    adjusted_uk = adjust_price(uk_top3, min_uk_usd)
+    length_cm = mm_to_cm(item_data.get('length', 0))
+    width_cm  = mm_to_cm(item_data.get('width', 0))
+    height_cm = mm_to_cm(item_data.get('height', 0))
+    weight_g  = safe_float(item_data.get('weight', 0))
+    cost      = float(item_data['domestic_price'])
+    is_high_tariff = item_data.get('is_high_tariff', False)
 
-    # 両方とも6%未達の場合はスキップ
-    if adjusted_us is None and adjusted_uk is None:
-        print(f"    [SKIP] US/UKともにTop3内で利益率6%未満のため、データを破棄します。")
+    us_shipping_jpy = calculate_shipping_cost(weight_g, length_cm, width_cm, height_cm, US_SHIPPING_TABLE)
+    uk_shipping_jpy = calculate_shipping_cost(weight_g, length_cm, width_cm, height_cm, UK_SHIPPING_TABLE)
+    print(f"    [*] 国際送料試算: US=¥{us_shipping_jpy:,.0f} / UK=¥{uk_shipping_jpy:,.0f}")
+
+    us_top3 = item_data.get('us_top3_prices', [])
+    uk_top3 = item_data.get('uk_top3_prices', [])
+    us_top3_shipping = item_data.get('us_top3_shipping', [])
+
+    h_usd = min(us_top3) if us_top3 else None
+    j_usd = min(uk_top3) if uk_top3 else None
+
+    if h_usd is None and j_usd is not None:
+        h_usd = j_usd
+    if j_usd is None and h_usd is not None:
+        j_usd = h_usd
+    if h_usd is None and j_usd is None:
+        print("    [SKIP] US/UKともに競合データなし。書き込みをスキップします。")
         return False
 
-    # 片方だけクリアした場合の強制引き上げ
-    if adjusted_us is None:
-        adjusted_us = min_us_usd
-        print(f"    [ADJUST] USは利益率未達のため、最低価格 ${adjusted_us} に強制調整します。")
-    if adjusted_uk is None:
-        adjusted_uk = min_uk_usd
-        print(f"    [ADJUST] UKは利益率未達のため、最低価格 ${adjusted_uk} に強制調整します。")
+    # H/J それぞれ独立したKで利益率を仮計算
+    # KはH/Jそれぞれの価格で計算（安い方がスプシのK列基準になる）
+    k_us = simulate_k_us(h_usd)
+    k_uk = simulate_k_uk(j_usd)
+    m_us, profit_us = calc_margin_us(k_us, 0, exchange_rate, cost, us_shipping_jpy, is_high_tariff)
+    m_uk, profit_uk = calc_margin_uk(k_uk, exchange_rate, cost, uk_shipping_jpy)
+    print(f"    [試算] K_US=${k_us:.2f} K_UK=${k_uk:.2f} | US利益率: {m_us:.1%} | UK利益率: {m_uk:.1%}")
 
-    # 3. 書き込み先（B列が空の行）の探索
+    # Top3の上限値（3件未満は上限なし）
+    h_max = max(us_top3) if len(us_top3) >= 3 else float('inf')
+    j_max = max(uk_top3) if len(uk_top3) >= 3 else float('inf')
+
+    # 利益率未達の場合: H/J それぞれ独立して引き上げ
+    if m_us < TARGET_MARGIN or m_uk < TARGET_MARGIN:
+        k_min_us = find_min_k_for_us(exchange_rate, cost, us_shipping_jpy, is_high_tariff)
+        k_min_uk = find_min_k_for_uk(exchange_rate, cost, uk_shipping_jpy)
+
+        if k_min_us is None or k_min_uk is None:
+            print(f"    [SKIP] 利益率{TARGET_MARGIN:.0%}の達成が構造的に不可能。スキップします。")
+            return False
+
+        h_min = round(k_min_us, 2)
+        j_min = round(k_min_uk, 2)
+
+        us_achievable = (h_min <= h_max)
+        uk_achievable = (j_min <= j_max)
+
+        if not us_achievable and not uk_achievable:
+            print(f"    [SKIP] US(必要${h_min:.2f}>上限${h_max:.2f})・UK(必要${j_min:.2f}>上限${j_max:.2f})ともに6%達成不可。")
+            return False
+
+        # H/J をそれぞれ独立して引き上げ
+        if us_achievable:
+            h_usd = max(h_usd, h_min)
+        if uk_achievable:
+            j_usd = max(j_usd, j_min)
+
+        k_us = simulate_k_us(h_usd)
+        k_uk = simulate_k_uk(j_usd)
+        m_us, profit_us = calc_margin_us(k_us, 0, exchange_rate, cost, us_shipping_jpy, is_high_tariff)
+        m_uk, profit_uk = calc_margin_uk(k_uk, exchange_rate, cost, uk_shipping_jpy)
+        print(f"    [ADJUST] H=${h_usd:.2f}(US最低${h_min:.2f}) J=${j_usd:.2f}(UK最低${j_min:.2f})")
+        print(f"    [ADJUST] US利益率: {m_us:.1%} | UK利益率: {m_uk:.1%}")
+
+    if m_us < TARGET_MARGIN and m_uk < TARGET_MARGIN:
+        print(f"    [SKIP] US/UKともに利益率{TARGET_MARGIN:.0%}未満。スキップします。")
+        return False
+
+    print(f"    [確定] H=${h_usd:.2f} / J=${j_usd:.2f}")
+    print(f"    [確定] US利益率: {m_us:.1%} (¥{profit_us:,.0f}) | UK利益率: {m_uk:.1%} (¥{profit_uk:,.0f})")
+
+    # 書き込み先探索（B列が空の最初の行）
     target_row = None
-    # 既存の最大行か、100行先まで探索して空行を見つける
-    max_search_row = ws.max_row + 100
-    for row in range(2, max_search_row):
-        if not ws.cell(row=row, column=2).value: 
+    for row in range(2, ws.max_row + 100):
+        if not ws.cell(row=row, column=2).value:
             target_row = row
             break
-    if not target_row: target_row = ws.max_row + 1
+    if not target_row:
+        target_row = ws.max_row + 1
 
-    # 日付と担当者
     today_str = datetime.datetime.now().strftime("%m/%d").lstrip("0").replace("/0", "/")
     operator_info = f"{today_str}池田"
 
-    # セル更新用のマッピング (列インデックス -> B:2, C:3, D:4, E:5, F:6, G:7, H:8, J:10, V:22, X:24, Z:26, AD:30)
+    def to_num(val):
+        try: return float(val)
+        except: return ""
+
     updates = {
-        2: item_data['product_name'],
-        3: item_data['length'],
-        4: item_data['width'],
-        5: item_data['height'],
-        6: item_data['weight'],
-        7: item_data['domestic_price'],
-        8: adjusted_us,
-        10: adjusted_uk,
+        2:  item_data['product_name'],
+        3:  round(mm_to_cm(item_data['length']), 1) if item_data.get('length') else "",
+        4:  round(mm_to_cm(item_data['width']), 1)  if item_data.get('width')  else "",
+        5:  round(mm_to_cm(item_data['height']), 1) if item_data.get('height') else "",
+        6:  to_num(item_data.get('weight')),
+        7:  item_data['domestic_price'],
+        8:  h_usd,
+        10: j_usd,
         22: item_data['source_url'],
         24: "高関税" if item_data.get('is_high_tariff') else "低関税",
         26: item_data['condition'],
@@ -98,23 +208,18 @@ def write_to_excel(item_data):
     }
 
     font_10 = Font(size=10)
-
-    # 4. セルへ書き込み（文字サイズ10適用、背景色維持）
     for col_idx, val in updates.items():
         cell = ws.cell(row=target_row, column=col_idx)
-        # 数値の場合は半角変換をスキップ
         if isinstance(val, (int, float)):
             cell.value = val
         else:
             cell.value = to_half_width(val) if val != "" else val
         cell.font = font_10
 
-    # 5. 保存
     try:
         wb.save(EXCEL_PATH)
-        print(f"    [SUCCESS] Excelシートの {target_row} 行目に書き込みが完了しました。")
+        print(f"    [SUCCESS] {target_row} 行目に書き込み完了。")
+        return True
     except PermissionError:
-        print(f"    [!] エラー: Excelファイルが開かれています。閉じてから再度実行してください。")
+        print(f"    [!] Excelファイルが開かれています。閉じてから再実行してください。")
         return False
-
-    return True

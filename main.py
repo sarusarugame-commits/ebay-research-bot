@@ -35,7 +35,7 @@ from llm_namer import extract_product_name
 from shopping_api import search_rakuten, search_yahoo, scrape_yahoo_item
 from amazon_scraper import search_amazon, search_amazon_via_google, scrape_amazon_specs
 from llm_vision_judge import verify_model_match
-from excel_writer import write_to_excel
+from sheets_writer import write_to_sheet as write_to_excel
 
 def extract_specs_from_text(text):
     w, d = "不明", "不明"
@@ -558,8 +558,6 @@ def main():
             
             
             print("\n[*] 国内最安値が判明したため、eBay全体での競合最安値（US/UK）をチェックします...")
-
-            print("\n[*] 国内最安値が判明したため、eBay全体での競合最安値（US/UK）をチェックします...")
             from validate_ebay_search_v3 import process_market, get_ebay_token
             
             token = get_ebay_token()
@@ -602,10 +600,49 @@ def main():
                 # ミラーリングロジック
                 if us_top3 and not uk_top3:
                     print("[*] UK の結果が空のため、US の結果を UK にミラーリングします。")
-                    uk_top3 = us_top3.copy()
+                    uk_top3 = [dict(item) for item in us_top3]  # deepcopyで独立させる
+                    print("[*] ミラーリングしたUK商品の送料をGB向けに取り直します...")
+                    from validate_ebay_search_v3 import get_item_details, get_valid_shipping_cost
+                    from validate_ebay_search_v3 import get_gbp_to_usd_rate
+                    GBP_TO_USD = get_gbp_to_usd_rate(fallback=1.27)
+                    for item in uk_top3:
+                        item_id_str = item.get("itemId", "")
+                        formatted_id = f"v1|{item_id_str}|0" if "|" not in item_id_str else item_id_str
+                        details = get_item_details(token, formatted_id, "EBAY_GB")
+                        if details:
+                            shipping_info = get_valid_shipping_cost(details)
+                            if shipping_info:
+                                ship_val, ship_currency = shipping_info
+                                # GBPで返ってきた場合はUSDに換算
+                                if ship_currency.upper() == "GBP":
+                                    ship_val = round(ship_val * GBP_TO_USD, 2)
+                                    print(f"    [*] GBP→USD換算: £->  ${ship_val:.2f}")
+                                item["shipping"] = ship_val
+                                item["total_usd"] = item["price"] + ship_val
+                                print(f"    [OK] GB送料取り直し: ${ship_val:.2f} -> 合計 ${item['total_usd']:.2f}")
+                            else:
+                                print(f"    [!] GBへの配送不可のためUSの送料をそのまま使用")
+                    uk_top3.sort(key=lambda x: x["total_usd"])
+
                 elif uk_top3 and not us_top3:
                     print("[*] US の結果が空のため、UK の結果を US にミラーリングします。")
-                    us_top3 = uk_top3.copy()
+                    us_top3 = [dict(item) for item in uk_top3]  # deepcopyで独立させる
+                    print("[*] ミラーリングしたUS商品の送料をUS向けに取り直します...")
+                    from validate_ebay_search_v3 import get_item_details, get_valid_shipping_cost
+                    for item in us_top3:
+                        item_id_str = item.get("itemId", "")
+                        formatted_id = f"v1|{item_id_str}|0" if "|" not in item_id_str else item_id_str
+                        details = get_item_details(token, formatted_id, "EBAY_US")
+                        if details:
+                            shipping_info = get_valid_shipping_cost(details)
+                            if shipping_info:
+                                ship_val, _ = shipping_info
+                                item["shipping"] = ship_val
+                                item["total_usd"] = item["price"] + ship_val
+                                print(f"    [OK] US送料取り直し: ${ship_val:.2f} -> 合計 ${item['total_usd']:.2f}")
+                            else:
+                                print(f"    [!] USへの配送不可のためUKの送料をそのまま使用")
+                    us_top3.sort(key=lambda x: x["total_usd"])
 
                 print("\n" + "="*50)
                 print("   🏆 eBay Global 競合最安値 (Top 3)")
@@ -639,16 +676,17 @@ def main():
 
             item_data = {
                 "product_name": final_name,
-                "length": ext_dim(dims_final, 0),
-                "width": ext_dim(dims_final, 1),
-                "height": ext_dim(dims_final, 2),
-                "weight": ext_weight(weight_final),
+                "length": ext_dim(dims_final, 0),   # mm単位 (excel_writer側でcm変換)
+                "width": ext_dim(dims_final, 1),    # mm単位
+                "height": ext_dim(dims_final, 2),   # mm単位
+                "weight": ext_weight(weight_final), # g単位
                 "domestic_price": best_item.get("total_price", 0),
                 "us_top3_prices": [item["total_usd"] for item in us_top3] if 'us_top3' in locals() else [],
                 "uk_top3_prices": [item["total_usd"] for item in uk_top3] if 'uk_top3' in locals() else [],
-                "us_shipping_jpy": locals().get('calculated_us_shipping_jpy', 0),
-                "uk_shipping_jpy": locals().get('calculated_uk_shipping_jpy', 0),
+                "us_top3_shipping": [item.get("shipping", 0) for item in us_top3] if 'us_top3' in locals() else [],
+                "uk_top3_shipping": [item.get("shipping", 0) for item in uk_top3] if 'uk_top3' in locals() else [],
                 "source_url": best_item.get("page_url", ""),
+                "ebay_url": target_item.get("link", ""),
                 "is_high_tariff": high_tariff_flag,
                 "condition": final_ebay_condition
             }

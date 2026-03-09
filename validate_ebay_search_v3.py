@@ -24,6 +24,23 @@ from ebay_scraper import get_browser_page
 USE_STRICT_CLIENT_MODE = True
 # ======================================================================
 
+def get_gbp_to_usd_rate(fallback=1.27):
+    """Frankfurter API (無料・APIキー不要) からGBP→USDの最新レートを取得する"""
+    try:
+        r = requests.get(
+            "https://api.frankfurter.dev/v1/latest",
+            params={"base": "GBP", "symbols": "USD"},
+            timeout=5
+        )
+        if r.status_code == 200:
+            rate = r.json()["rates"]["USD"]
+            print(f"    [*] GBP→USDレート取得: {rate} (Frankfurter API)")
+            return rate
+    except Exception as e:
+        print(f"    [!] 為替レート取得失敗、固定値({fallback})を使用: {e}")
+    return fallback
+
+
 def get_ebay_token():
     if not EBAY_APP_ID or not EBAY_CLIENT_SECRET:
         print("[!] EBAY_APP_ID または EBAY_CLIENT_SECRET が設定されていません。")
@@ -377,7 +394,7 @@ def process_market(token, market_id, query, ref_img, condition, model_number="")
                 verified.append(cand)
                 continue
 
-            if verify_model_match(ref_img, cand_img, model_number):
+            if verify_model_match(ref_img, cand_img, model_number, condition_text="")[0]:
                 verified.append(cand)
             else:
                 print(f"    [LLM REJECT] 型番不一致のため除外: {cand.get('title','')[:50]}")

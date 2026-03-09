@@ -1,5 +1,6 @@
 import requests
 import time
+from urllib.parse import urlparse, parse_qs, unquote
 from config import RAKUTEN_APPLICATION_ID, RAKUTEN_ACCESS_KEY, RAKUTEN_AFFILIATE_ID, YAHOO_CLIENT_ID
 
 def search_rakuten(keyword):
@@ -58,7 +59,7 @@ def search_rakuten(keyword):
                     "price_int": price,
                     "total_price": total_price,
                     "condition": condition,
-                    "page_url": item["itemUrl"],
+                    "page_url": unquote(parse_qs(urlparse(item["itemUrl"]).query).get("pc", [item["itemUrl"]])[0]),
                     "img_urls": img_urls,
                     "shipping_included": True if ship_flag == 1 else False
                 })
@@ -109,7 +110,7 @@ def search_yahoo(keyword):
                     "price_int": price,
                     "total_price": total_price,
                     "condition": condition,
-                    "page_url": item["url"],
+                    "page_url": unquote(parse_qs(urlparse(item["url"]).query).get("pc", [item["url"]])[0]),
                     "img_urls": img_urls,
                     "shipping_included": is_free_shipping
                 })
