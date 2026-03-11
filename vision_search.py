@@ -1,15 +1,91 @@
-import os
-import requests
 import time
 import re
+import json
+import base64
+try:
+    from scrapling import Adaptor as _ScraplingAdaptor
+    _SCRAPLING_OK = True
+except ImportError:
+    _SCRAPLING_OK = False
 from config import GOOGLE_APPLICATION_CREDENTIALS
+
+def _parse_lens_html(html, pref_domains, max_results, exclude_domains=None):
+    """ScraplingのAdaptorでHTMLを解析。CSSクラス不要でhrefドメイン一致で抽出。"""
+    results = []
+    exclude_domains = exclude_domains or []
+    page = _ScraplingAdaptor(html)
+    for a in page.css('a'):
+        href = a.attrib.get('href', '')
+        if not href.startswith('http'): continue
+        if not any(d in href for d in pref_domains): continue
+        if any(d in href for d in exclude_domains): continue
+        # テキストは heading > h3 > span > fallback の優先順で取得
+        text = ''
+        for sel in ['div[role="heading"]', 'h3', 'span']:
+            el = a.css_first(sel)
+            if el and el.text.strip():
+                text = el.text.strip()
+                break
+        if not text:
+            text = a.text.strip()
+        img_el = a.css_first('img')
+        img_url = img_el.attrib.get('src', '') if img_el else ''
+        if len(text) > 5:
+            results.append({'page_url': href, 'title': text, 'snippet': '', 'img_url': img_url})
+        if len(results) >= max_results:
+            break
+    return results
+
+def _parse_lens_tab(tab, pref_domains, max_results, exclude_domains=None):
+    """タブのHTMLをScrapling優先・フォールバックで解析する共通関数"""
+    exclude_domains = exclude_domains or []
+    if _SCRAPLING_OK:
+        try:
+            html = tab.html
+            results = _parse_lens_html(html, pref_domains, max_results, exclude_domains)
+            if results:
+                return results
+            print(f"    [Lens] Scrapling: 0件。DrissionPageフォールバックへ")
+        except Exception as e:
+            print(f"    [Lens] Scrapling失敗({e})。DrissionPageフォールバックへ")
+
+    # フォールバック: DrissionPage（複数セレクタ試行 + 全aタグ）
+    results = []
+    candidate_selectors = ['css:a.LBcIee', 'css:a.cz3goc', 'css:div.g a', 'css:div.tF2Cxc a', 'css:div.yuRUbf a']
+    items = []
+    for sel in candidate_selectors:
+        items = tab.eles(sel, timeout=2)
+        if items: break
+    if not items:
+        items = tab.eles('tag:a', timeout=2)
+
+    for item in items:
+        try:
+            href = item.attr('href') or ''
+            if not href.startswith('http'): continue
+            if not any(d in href for d in pref_domains): continue
+            if any(d in href for d in exclude_domains): continue
+            text = ''
+            for sel in ['css:div[role="heading"]', 'css:h3', 'css:span']:
+                try:
+                    el = item.ele(sel, timeout=0.5)
+                    if el and el.text.strip():
+                        text = el.text.strip(); break
+                except Exception: pass
+            if not text: text = item.text.strip()
+            img_ele = item.ele('tag:img', timeout=0.5)
+            img_url = img_ele.attr('src') if img_ele else ''
+            if len(text) > 5:
+                results.append({'page_url': href, 'title': text, 'snippet': '', 'img_url': img_url})
+        except Exception: continue
+        if len(results) >= max_results: break
+    return results
 
 def search_by_google_lens(image_url, browser, max_results=5):
     """【国内検索用】メインから渡されたブラウザを使用して Google Lens を実行する"""
     print(f"[*] Google Lens (ブラウザ版) で検索を開始します...", flush=True)
     results = []
     try:
-        # 日本語結果を優先させるため lr=lang_ja と hl=ja を付与
         tab = browser.new_tab(f"https://www.google.com/searchbyimage?image_url={image_url}&client=app&lr=lang_ja&hl=ja")
         tab.wait.load_start()
         tab.wait(2)
@@ -17,36 +93,8 @@ def search_by_google_lens(image_url, browser, max_results=5):
         tab.wait(2)
 
         pref_domains = ["mercari.com", "rakuten.co.jp", "yahoo.co.jp", "shopping.yahoo.co.jp", "paypayfleamarket.yahoo.co.jp", "fril.jp", "amazon.co.jp"]
-
-        # Googleは頻繁にクラス名を変えるため複数セレクタを試す
-        candidate_selectors = [
-            'css:a.LBcIee',
-            'css:a.cz3goc',
-            'css:div.g a',
-            'css:div.tF2Cxc a',
-            'css:div.yuRUbf a',
-        ]
-        items = []
-        for sel in candidate_selectors:
-            items = tab.eles(sel, timeout=2)
-            if items:
-                print(f"    [Lens] セレクタ '{sel}' で {len(items)} 件取得", flush=True)
-                break
-        if not items:
-            print(f"    [Lens] セレクタ未ヒット。全aタグからフィルタリングします", flush=True)
-            items = tab.eles('tag:a', timeout=2)
-
-        for item in items:
-            href = item.attr('href')
-            if not href or not href.startswith('http'): continue
-            if any(domain in href for domain in pref_domains):
-                title_ele = item.ele('css:div[role="heading"]', timeout=1)
-                text = title_ele.text.strip() if title_ele else item.text.strip()
-                img_ele = item.ele('tag:img', timeout=1)
-                img_url = img_ele.attr('src') if img_ele else ""
-                if len(text) > 5:
-                    results.append({"page_url": href, "title": text, "snippet": "", "img_url": img_url})
-            if len(results) >= max_results: break
+        results = _parse_lens_tab(tab, pref_domains, max_results)
+        
         tab.close()
         print(f" -> Google Lens で国内サイトを {len(results)} 件抽出しました。", flush=True)
     except Exception as e:
@@ -182,30 +230,10 @@ def search_global_images_by_lens(image_uri, browser, max_results=5):
             tab.wait(1)
             
             jp_domains = ["mercari.com", "rakuten.co.jp", "yahoo.co.jp", "fril.jp", "amazon.co.jp", ".jp/"]
-            items = tab.eles('css:a.LBcIee')
+            results = _parse_lens_tab(tab, pref_domains=[], max_results=max_results, exclude_domains=jp_domains)
             
-            existing_urls = {r["page_url"] for r in results}
-            added_by_lens = 0
-            for item in items:
-                href = item.attr('href')
-                if not href or href in existing_urls: continue
-                if any(domain in href for domain in jp_domains): continue
-                    
-                title_ele = item.ele('css:div[role="heading"]', timeout=1)
-                text = title_ele.text.strip() if title_ele else item.text.strip()
-                img_ele = item.ele('tag:img', timeout=1)
-                img_url_cand = img_ele.attr('src') if img_ele else ""
-                
-                if len(text) > 5 and img_url_cand:
-                    results.append({"page_url": href, "title": text, "snippet": "", "img_url": img_url_cand})
-                    existing_urls.add(href)
-                    added_by_lens += 1
-                if len(results) >= max_results: break
-                
             tab.close()
-            # 念のため最後に再度スライス
-            results = results[:max_results]
-            print(f" -> Lens補填完了。新たに {added_by_lens} 件を追加し、合計 {len(results)} 件の海外候補を確保しました！", flush=True)
+            print(f" -> Lens補填完了。合計 {len(results)} 件の海外候補を確保しました！", flush=True)
         except Exception as e:
             print(f"[!] Lens補填検索 失敗: {e}", flush=True)
             
