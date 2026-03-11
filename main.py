@@ -555,19 +555,8 @@ def main():
                 print("    [!] LLM検証で全候補が除外されました。最安値なしとして処理します。")
         # ====================================================================
         if best_item:
-            database.mark_as_researched(
-                item_id, 
-                platform=best_item.get("platform"), 
-                title=best_item.get("title"), 
-                price=best_item.get("total_price"), 
-                condition=best_item.get("condition"), 
-                url=best_item.get("page_url"), 
-                weight=weight_final, 
-                dimensions=dims_final
-            )
-            
-            
             print("\n[*] 国内最安値が判明したため、eBay全体での競合最安値（US/UK）をチェックします...")
+
 
             print("\n[*] 国内最安値が判明したため、eBay全体での競合最安値（US/UK）をチェックします...")
             from validate_ebay_search_v3 import process_market, get_ebay_token
@@ -664,8 +653,19 @@ def main():
             }
 
             write_to_sheet(item_data)
+            database.mark_as_researched(
+                item_id,
+                platform=best_item.get("platform"),
+                title=best_item.get("title"),
+                price=best_item.get("total_price"),
+                condition=best_item.get("condition"),
+                url=best_item.get("page_url"),
+                weight=weight_final,
+                dimensions=dims_final
+            )
         else:
             print("\n[!] 国内最安値が見つからなかったため、Excelへの書き込みをスキップします。")
+
 
         print(f"{BLUE}\n{'='*60}{RESET}")
         print(f"{BLUE}                 ✨ リサーチ完了 ✨{RESET}")

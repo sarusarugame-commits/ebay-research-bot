@@ -9,14 +9,39 @@ from bs4 import BeautifulSoup
 _browser_instance = None
 
 def _set_ebay_language(browser):
-    """eBayブラウザセッションを英語UIに固定する"""
+    """eBayの言語設定ページで English を選択・保存してUIを英語に固定する"""
     try:
         tab = browser.latest_tab
-        tab.get("https://www.ebay.com/language?lang=en-US")
-        tab.wait(1.5)
+        tab.get("https://www.ebay.com/usr/change/languageandsettings")
+        tab.wait(2)
+
+        # 「English」ラジオボタンを探してクリック
+        # eBayの言語設定ページは input[value="en-US"] または label テキストで選択できる
+        en_radio = tab.ele('css:input[value="en-US"]', timeout=5)
+        if en_radio:
+            en_radio.click()
+            tab.wait(0.5)
+        else:
+            # value属性がない場合はラベルテキストで探す
+            en_label = tab.ele('text=English', timeout=3)
+            if en_label:
+                en_label.click()
+                tab.wait(0.5)
+
+        # 保存ボタンをクリック
+        save_btn = (
+            tab.ele('css:button[type="submit"]', timeout=3) or
+            tab.ele('text=Save', timeout=3) or
+            tab.ele('text=保存', timeout=3)
+        )
+        if save_btn:
+            save_btn.click()
+            tab.wait(2)
+
         print("[*] eBay言語を英語に設定しました。", flush=True)
     except Exception as e:
         print(f"[!] eBay言語設定失敗（無視して続行）: {e}", flush=True)
+
 
 def handle_ebay_popups(tab):
     """eBay特有のポップアップ（配送先確認など）を処理する。"""
