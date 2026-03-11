@@ -363,7 +363,7 @@ def main():
                         print(f"    [REJECT] 類似度スコア0（model_serverで除外済み）")
                         continue
 
-                    print(f"    [MATCH] 検証合格 ({final_score:.1f}%) URL: {hyperlink(page_url)}")
+                    print(f"    [MATCH] 検証合格 ({final_score:.1f}%) URL: {hyperlink(page_url, page_url[:35] + '...')}")
 
                     # 5. 送料計算と最安値更新
                     detail_price_str = str(item.get('price', '0'))

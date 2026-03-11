@@ -14,6 +14,12 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from config import EBAY_APP_ID, EBAY_CLIENT_SECRET
 from clip_judge_client import judge_similarity
 from llm_vision_judge import verify_model_match
+
+BLUE  = "\033[94m"
+RESET = "\033[0m"
+def hyperlink(url, text=None):
+    label = text if text else (url[:40] + "…" if len(url) > 40 else url)
+    return f"\033]8;;{url}\033\\{BLUE}{label}{RESET}\033]8;;\033\\"
 from ebay_scraper import get_browser_page
 
 # ======================================================================
@@ -471,7 +477,7 @@ def run_test():
                 print(f"  Rank {i}: {res['title'][:60]}...")
                 print(f"    - 合計価格: ${res['total_usd']:,.2f} USD (本体:{res['price']} {res['currency']} + 送料:{res['shipping']})")
                 print(f"    - 適合率:   {res['score']:.1f}%")
-                print(f"    - URL:      {res['item_url']}")
+                print(f"    - URL:      {hyperlink(res['item_url'])}")
     print("="*70)
 
 if __name__ == "__main__":
