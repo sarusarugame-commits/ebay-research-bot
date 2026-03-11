@@ -20,7 +20,7 @@ RESET = "\033[0m"
 def hyperlink(url, text=None):
     label = text if text else (url[:40] + "…" if len(url) > 40 else url)
     return f"\033]8;;{url}\033\\{BLUE}{label}{RESET}\033]8;;\033\\"
-from ebay_scraper import get_browser_page
+from ebay_scraper import get_browser_page, scrape_ebay_item_specs
 
 # ======================================================================
 # ⚙️ 動作モード設定（True/False で切り替え）
@@ -370,7 +370,24 @@ def process_market(token, market_id, query, ref_img, condition, model_number="",
         else:
             print(f"    [!] タイトルフィルター後に候補なし。元の候補をそのまま使用。")
 
-    # 2. 画像判定 (DINOv2)
+    # 1.8 詳細ページから複数画像取得（タイトルフィルター通過済み候補のみ）
+    browser = get_browser_page()
+    if browser:
+        print(f"    [*] {market_id}: 詳細ページから複数画像を取得中（{len(scraped_candidates)}件）...")
+        for c in scraped_candidates:
+            item_id = c.get("itemId", "")
+            if not item_id:
+                continue
+            try:
+                specs = scrape_ebay_item_specs(item_id, browser)
+                detail_imgs = [u for u in specs.get("img_urls", []) if u]
+                if detail_imgs:
+                    c["img_urls"] = detail_imgs
+                    c["best_img_url"] = detail_imgs[0]
+            except Exception as e:
+                print(f"    [!] 詳細画像取得失敗 ({item_id}): {e}")
+
+    # 2. 画像判定 (DINOv2) - 複数画像の中から最高スコアを選出
     print(f"    [*] {market_id}: {len(scraped_candidates)} 件の候補を画像判定中...")
     judged = judge_similarity(ref_img, scraped_candidates)
     
