@@ -370,6 +370,13 @@ def process_market(token, market_id, query, ref_img, condition, model_number="",
         else:
             print(f"    [!] タイトルフィルター後に候補なし。元の候補をそのまま使用。")
 
+    # 1.7 exclude_idを事前除外（DINOv2の適応閾値に自己比較スコアが影響するのを防ぐ）
+    if exclude_id:
+        before_count = len(scraped_candidates)
+        scraped_candidates = [c for c in scraped_candidates if str(c.get("itemId", "")) != str(exclude_id)]
+        if len(scraped_candidates) < before_count:
+            print(f"    [*] ターゲット自身を除外しました (ID: {exclude_id})")
+
     # 1.8 詳細ページから複数画像取得（タイトルフィルター通過済み候補のみ）
     browser = get_browser_page()
     if browser:
