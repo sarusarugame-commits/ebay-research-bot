@@ -370,14 +370,19 @@ def process_market(token, market_id, query, ref_img, condition, model_number="",
         else:
             print(f"    [!] タイトルフィルター後に候補なし。元の候補をそのまま使用。")
 
-    # 1.7 exclude_idを事前除外（DINOv2の適応閾値に自己比較スコアが影響するのを防ぐ）
+    # 1.8 ターゲット自身を特別枠として抽出（画像判定・LLM検証をスキップ）
+    self_candidate = None
     if exclude_id:
-        before_count = len(scraped_candidates)
-        scraped_candidates = [c for c in scraped_candidates if str(c.get("itemId", "")) != str(exclude_id)]
-        if len(scraped_candidates) < before_count:
-            print(f"    [*] ターゲット自身を除外しました (ID: {exclude_id})")
+        remaining = []
+        for c in scraped_candidates:
+            if str(c.get("itemId", "")) == str(exclude_id):
+                self_candidate = c
+                print(f"    [*] ターゲット自身(ID:{exclude_id})を特別枠として抽出しました。")
+            else:
+                remaining.append(c)
+        scraped_candidates = remaining
 
-    # 1.8 詳細ページから複数画像取得（タイトルフィルター通過済み候補のみ）
+    # 1.9 詳細ページから複数画像取得（特別枠以外の通常候補のみ）
     browser = get_browser_page()
     if browser:
         print(f"    [*] {market_id}: 詳細ページから複数画像を取得中（{len(scraped_candidates)}件）...")
@@ -394,10 +399,9 @@ def process_market(token, market_id, query, ref_img, condition, model_number="",
             except Exception as e:
                 print(f"    [!] 詳細画像取得失敗 ({item_id}): {e}")
 
-    # 2. 画像判定 (DINOv2) - 複数画像の中から最高スコアを選出
     print(f"    [*] {market_id}: {len(scraped_candidates)} 件の候補を画像判定中...")
     judged = judge_similarity(ref_img, scraped_candidates)
-    
+
     # 相対審査: clip_judge側で score=0 に落とされた物を除外（既に動的閾値適用済み）
     MIN_SCORE = 70.0  # eBay競合は70%未満を除外（誤検知防止）
     top_matches = [m for m in judged if m.get("score", 0) >= MIN_SCORE]
@@ -406,9 +410,11 @@ def process_market(token, market_id, query, ref_img, condition, model_number="",
         top_matches = [m for m in judged if m.get("score", 0) > 0]
         if top_matches:
             print(f"    [-] 70%以上の候補なし。最高スコア {max(m['score'] for m in top_matches):.1f}% で緩和適用。")
-        else:
+        elif self_candidate is None:
             print(f"    [-] 画像判定で合格した候補がありませんでした。")
             return []
+        else:
+            top_matches = []
     
     # 適合率順にソート (スクレイピング側ですでに最安値順に並んでいるが、念のため類似度も加味)
     top_matches.sort(key=lambda x: x["score"], reverse=True)
@@ -448,7 +454,34 @@ def process_market(token, market_id, query, ref_img, condition, model_number="",
     # 配送可能なものの中で合計金額順にソート
     final_candidates.sort(key=lambda x: x["total_usd"])
 
-    # ===== LLM型番一致検証 =====
+    # ===== 特別枠（ターゲット自身）の配送チェック =====
+    if self_candidate is not None:
+        self_id = self_candidate.get("itemId", "")
+        formatted_self_id = f"v1|{self_id}|0" if "|" not in self_id else self_id
+        self_details = get_item_details(token, formatted_self_id, market_id)
+        if self_details:
+            self_shipping = get_valid_shipping_cost(self_details)
+            if self_shipping is None:
+                print(f"    [SELF SKIP] ターゲット自身(ID:{self_id}) - 指定国({market_id})への配送不可のため特別枠を除外。")
+                self_candidate = None
+            else:
+                ship_val, ship_currency = self_shipping
+                price_val = float(self_details.get("price", {}).get("value", 0))
+                price_currency = self_details.get("price", {}).get("currency", "USD")
+                total_usd = price_val + ship_val
+                print(f"    [SELF OK] ターゲット自身(ID:{self_id}) - 配送可 (本体 {price_val} + 送料 {ship_val} {ship_currency}) -> 合計 ${total_usd:.2f} USD")
+                self_candidate["price"] = price_val
+                self_candidate["currency"] = price_currency
+                self_candidate["shipping"] = ship_val
+                self_candidate["ship_currency"] = ship_currency
+                self_candidate["total_usd"] = total_usd
+                self_candidate["score"] = 100.0
+                self_candidate["is_self"] = True
+        else:
+            print(f"    [SELF SKIP] ターゲット自身(ID:{self_id}) - API詳細取得失敗のため特別枠を除外。")
+            self_candidate = None
+
+    # ===== LLM型番一致検証（通常候補のみ・特別枠はスキップ）=====
     if model_number and final_candidates:
         print(f"    [*] {market_id}: LLM型番検証を開始します（型番: {model_number}）...")
         from concurrent.futures import ThreadPoolExecutor as _TPE
@@ -470,7 +503,13 @@ def process_market(token, market_id, query, ref_img, condition, model_number="",
                     print(f"    [LLM REJECT] 型番不一致のため除外: {cand.get('title','')[:50]}")
 
         final_candidates = verified
-    
+
+    # ===== 特別枠をマージしてTop3を決定 =====
+    if self_candidate is not None:
+        final_candidates.append(self_candidate)
+        print(f"    [SELF ENTRY] ターゲット自身を特別枠としてTop3選考に追加します。")
+
+    final_candidates.sort(key=lambda x: x["total_usd"])
     return final_candidates[:3]
 
 def run_test():
