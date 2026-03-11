@@ -295,7 +295,7 @@ def get_item_details(token, item_id, marketplace_id):
         print(f"      [!] get_item_details API Error: {e}")
     return None
 
-def process_market(token, market_id, query, ref_img, condition, model_number="", exclude_id=None):
+def process_market(token, market_id, query, ref_img, condition, model_number="", exclude_id=None, ebay_title=""):
     print(f"\n[*] {market_id} ハイブリッド相場調査を開始します (Condition: {condition})...")
     
     # 1. ハイブリッド検索 (スクレイピング + APIフォールバック)
@@ -431,7 +431,7 @@ def process_market(token, market_id, query, ref_img, condition, model_number="",
                         or next((u for u in cand.get("img_urls", []) if u), None))
             if not cand_img:
                 return cand, True, ""
-            is_match, condition = verify_model_match(ref_img, cand_img, model_number, condition_text=cand.get("condition", ""))
+            is_match, condition = verify_model_match(ref_img, cand_img, model_number, condition_text=cand.get("condition", ""), ref_title=ebay_title)
             return cand, is_match, condition
 
         verified = []

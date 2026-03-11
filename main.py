@@ -635,10 +635,10 @@ def main():
 
                 def _search_market(market_id):
                     label = "US" if market_id == "EBAY_US" else "UK"
-                    top3 = process_market(token, market_id, final_en_name, img_url, target_cond, model_number=ebay_model_number, exclude_id=item_id)
+                    top3 = process_market(token, market_id, final_en_name, img_url, target_cond, model_number=ebay_model_number, exclude_id=item_id, ebay_title=target_item.get('title', ''))
                     if target_cond == "NEW" and not top3:
                         print(f"    [!] {label}で新品が見つからないため、中古で再検索します...")
-                        top3 = process_market(token, market_id, final_en_name, img_url, "USED", model_number=ebay_model_number, exclude_id=item_id)
+                        top3 = process_market(token, market_id, final_en_name, img_url, "USED", model_number=ebay_model_number, exclude_id=item_id, ebay_title=target_item.get('title', ''))
                     return top3
 
                 with ThreadPoolExecutor(max_workers=2) as ex:

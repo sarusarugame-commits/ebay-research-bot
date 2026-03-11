@@ -225,11 +225,12 @@ def judge_similarity_with_llm(ebay_img_url, scraped_items):
 
 # ─── 型番一致・コンディション判定 ────────────────────────────
 
-def verify_model_match(ref_img_url, candidate_img_url, model_number, condition_text):
+def verify_model_match(ref_img_url, candidate_img_url, model_number, condition_text, ref_title=""):
     prompt = f"""
 あなたはプロのeBayセラー兼鑑定士です。以下の2枚の画像を比較し、正確な鑑定を行ってください。
 
 【鑑定する型番/モデル】: {model_number}
+【参照商品タイトル（画像1）】: {ref_title if ref_title else "不明"}
 
 【国内サイトの商品説明テキスト】:
 {condition_text}
@@ -240,6 +241,7 @@ def verify_model_match(ref_img_url, candidate_img_url, model_number, condition_t
 - 本体の形状、テクスチャ、ロゴの配置、文字盤のデザインなど「物理的な製品特徴」が一致しているかを厳格に見てください。
 - 同一製品の別カラーバリエーションや世代違いは "match": false としてください。
 - 【特に重要】型番に「G2」「G3」「Mark II」「第2世代」などの世代識別子が含まれる場合、元の型番と世代違いであれば必ず "match": false にしてください。例：「URSA Mini Pro 4.6K」と「URSA Mini Pro 4.6K G2」は別製品です。
+- 【仕様差異の判定】参照商品タイトルにレンズマウント・カラー・容量・周波数帯など特定の仕様が明記されている場合、候補商品がその仕様と異なれば "match": false としてください。タイトルに仕様の記載がない場合は仕様差異を無視してください。
 
 【タスク2: コンディション判定】
 画像2の状態と商品説明テキストから、eBayの出品に最適なコンディションを以下から1つ選んでください。
