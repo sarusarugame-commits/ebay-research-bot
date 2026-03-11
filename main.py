@@ -630,19 +630,22 @@ def main():
                 
                 print(f"    [*] 国内最安値のコンディション: {best_item.get('condition')} -> eBay調査条件: {target_cond}")
                 
-                # US検索
-                us_top3 = process_market(token, "EBAY_US", final_en_name, img_url, target_cond, model_number=ebay_model_number, exclude_id=item_id)
-                # フォールバック: 新品で探していたが、結果が0件だった場合は中古で再試行
-                if target_cond == "NEW" and not us_top3:
-                    print(f"    [!] USで新品が見つからないため、中古で再検索します...")
-                    us_top3 = process_market(token, "EBAY_US", final_en_name, img_url, "USED", model_number=ebay_model_number, exclude_id=item_id)
-                
-                # UK検索
-                uk_top3 = process_market(token, "EBAY_GB", final_en_name, img_url, target_cond, model_number=ebay_model_number, exclude_id=item_id)
-                # フォールバック
-                if target_cond == "NEW" and not uk_top3:
-                    print(f"    [!] UKで新品が見つからないため、中古で再検索します...")
-                    uk_top3 = process_market(token, "EBAY_GB", final_en_name, img_url, "USED", model_number=ebay_model_number, exclude_id=item_id)
+                # US/UK 並列検索
+                from concurrent.futures import ThreadPoolExecutor
+
+                def _search_market(market_id):
+                    label = "US" if market_id == "EBAY_US" else "UK"
+                    top3 = process_market(token, market_id, final_en_name, img_url, target_cond, model_number=ebay_model_number, exclude_id=item_id)
+                    if target_cond == "NEW" and not top3:
+                        print(f"    [!] {label}で新品が見つからないため、中古で再検索します...")
+                        top3 = process_market(token, market_id, final_en_name, img_url, "USED", model_number=ebay_model_number, exclude_id=item_id)
+                    return top3
+
+                with ThreadPoolExecutor(max_workers=2) as ex:
+                    fut_us = ex.submit(_search_market, "EBAY_US")
+                    fut_uk = ex.submit(_search_market, "EBAY_GB")
+                    us_top3 = fut_us.result()
+                    uk_top3 = fut_uk.result()
 
                 # ミラーリングロジック
                 if us_top3 and not uk_top3:
@@ -693,9 +696,11 @@ def main():
                 "uk_top3_prices": [item["total_usd"] for item in uk_top3] if 'uk_top3' in locals() else [],
                 "us_shipping_jpy": locals().get('calculated_us_shipping_jpy', 0),
                 "uk_shipping_jpy": locals().get('calculated_uk_shipping_jpy', 0),
+                "ebay_url": f"https://www.ebay.com/itm/{item_id}",
                 "source_url": best_item.get("page_url", ""),
                 "is_high_tariff": high_tariff_flag,
-                "condition": final_ebay_condition
+                "condition": final_ebay_condition,
+                "origin": origin_final
             }
 
             write_to_sheet(item_data)

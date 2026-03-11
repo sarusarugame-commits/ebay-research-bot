@@ -60,9 +60,6 @@ def get_valid_shipping_cost(details):
     if not ship_options:
         return None  # 配送オプションなし（配送不可）
 
-    # 固定費または計算済みの送料を探す
-    valid_opts = [o for o in ship_options if o.get("shippingCostType") in ["FIXED", "CALCULATED"] and "shippingCost" in o]
-    
     # 鑑定サービス(Authenticity Guarantee)がある場合は優先
     for o in ship_options:
         svc_code = (o.get("shippingServiceCode") or "").lower()
@@ -71,14 +68,20 @@ def get_valid_shipping_cost(details):
             sc = o.get("shippingCost", {})
             return float(sc.get("value", 0)), sc.get("currency", "USD")
 
-    if valid_opts:
-        # 最も安い配送方法を選ぶ
-        valid_opts.sort(key=lambda o: float(o.get("shippingCost", {}).get("value", 0)))
-        opt = valid_opts[0]
-        sc = opt.get("shippingCost", {})
+    # shippingCostが含まれる全オプションを対象（タイプ問わず）
+    all_opts = [o for o in ship_options if "shippingCost" in o]
+
+    if all_opts:
+        all_opts.sort(key=lambda o: float(o.get("shippingCost", {}).get("value", 0)))
+        sc = all_opts[0].get("shippingCost", {})
         return float(sc.get("value", 0)), sc.get("currency", "USD")
-    
-    return None # 配送不可
+
+    # shippingCostキーが無くてもFREEなら0円として通す
+    free_opts = [o for o in ship_options if (o.get("shippingCostType") or "").upper() == "FREE"]
+    if free_opts:
+        return 0.0, "USD"
+
+    return None  # 配送不可
 
 def api_ebay_search(keyword, market_id="EBAY_US", condition="NEW", token=None):
     """
@@ -220,7 +223,11 @@ def hybrid_ebay_search(keyword, market_id="EBAY_US", condition="NEW", retry_coun
             title = title_tag.get_text(" ", strip=True) if title_tag else link_tag.get_text(" ", strip=True)
             
             # 🌟修正: 商品を捨てるのではなく、eBay特有の隠しテキスト（ノイズ）だけを置換して消す
-            title = re.sub(r'Opens in a new window or tab|Opens in a new window|New Listing', '', title, flags=re.IGNORECASE).strip()
+            title = re.sub(
+                r'Opens in a new window or tab|Opens in a new window|New Listing'
+                r'|新しいウィンドウまたはタブに表示されます|新しいウィンドウまたはタブで開く|新出品',
+                '', title, flags=re.IGNORECASE
+            ).strip()
             
             # 不要なヘッダーリンクなどを除外
             if "Shop on eBay" in title or not title or len(title) < 5: 
@@ -288,7 +295,7 @@ def get_item_details(token, item_id, marketplace_id):
         print(f"      [!] get_item_details API Error: {e}")
     return None
 
-def process_market(token, market_id, query, ref_img, condition, model_number=""):
+def process_market(token, market_id, query, ref_img, condition, model_number="", exclude_id=None):
     print(f"\n[*] {market_id} ハイブリッド相場調査を開始します (Condition: {condition})...")
     
     # 1. ハイブリッド検索 (スクレイピング + APIフォールバック)
@@ -325,6 +332,9 @@ def process_market(token, market_id, query, ref_img, condition, model_number="")
     judged = judge_similarity(ref_img, scraped_candidates)
     
     # 相対審査: clip_judge側で score=0 に落とされた物を除外（既に動的閾値適用済み）
+    # 自分のeBay商品IDを除外
+    if exclude_id:
+        judged = [m for m in judged if str(m.get("itemId", "")) != str(exclude_id)]
     top_matches = [m for m in judged if m.get("score", 0) > 0]
     if not top_matches:
         print(f"    [-] 画像判定で合格した候補がありませんでした。")
@@ -371,17 +381,23 @@ def process_market(token, market_id, query, ref_img, condition, model_number="")
     # ===== LLM型番一致検証 =====
     if model_number and final_candidates:
         print(f"    [*] {market_id}: LLM型番検証を開始します（型番: {model_number}）...")
-        verified = []
-        for cand in final_candidates:
-            cand_img = cand.get("img_urls", [None])[0]
-            if not cand_img:
-                verified.append(cand)
-                continue
+        from concurrent.futures import ThreadPoolExecutor as _TPE
 
-            if verify_model_match(ref_img, cand_img, model_number):
-                verified.append(cand)
-            else:
-                print(f"    [LLM REJECT] 型番不一致のため除外: {cand.get('title','')[:50]}")
+        def _verify_one(cand):
+            cand_img = (cand.get("best_img_url")
+                        or next((u for u in cand.get("img_urls", []) if u), None))
+            if not cand_img:
+                return cand, True, ""
+            is_match, condition = verify_model_match(ref_img, cand_img, model_number, condition_text=cand.get("condition", ""))
+            return cand, is_match, condition
+
+        verified = []
+        with _TPE(max_workers=min(len(final_candidates), 5)) as ex:
+            for cand, is_match, _ in ex.map(_verify_one, final_candidates):
+                if is_match:
+                    verified.append(cand)
+                else:
+                    print(f"    [LLM REJECT] 型番不一致のため除外: {cand.get('title','')[:50]}")
 
         final_candidates = verified
     
