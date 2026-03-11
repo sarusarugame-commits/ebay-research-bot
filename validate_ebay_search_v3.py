@@ -13,6 +13,24 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from config import EBAY_APP_ID, EBAY_CLIENT_SECRET
 from clip_judge_client import judge_similarity
+import threading as _threading
+_judge_lock = _threading.Lock()
+
+def _judge_similarity_safe(ref_img, candidates, max_retries=3, retry_delay=5):
+    """並列スレッド間のmodel_server競合を防ぐシリアライズラッパー（タイムアウト時リトライ付き）"""
+    import time as _time
+    for attempt in range(1, max_retries + 1):
+        try:
+            with _judge_lock:
+                return judge_similarity(ref_img, candidates)
+        except Exception as e:
+            if attempt < max_retries:
+                print(f"    [!] judge_similarity 失敗 (試行{attempt}/{max_retries}): {e} -> {retry_delay}秒後にリトライ...")
+                _time.sleep(retry_delay)
+            else:
+                print(f"    [!] judge_similarity 全試行失敗: {e} -> 空リストで続行")
+                return []
+
 from llm_vision_judge import verify_model_match
 
 BLUE  = "\033[94m"
@@ -403,7 +421,7 @@ def process_market(token, market_id, query, ref_img, condition, model_number="",
                 print(f"    [!] 詳細画像取得失敗 ({item_id}): {e}")
 
     print(f"    [*] {market_id}: {len(scraped_candidates)} 件の候補を画像判定中...")
-    judged = judge_similarity(ref_img, scraped_candidates)
+    judged = _judge_similarity_safe(ref_img, scraped_candidates)
 
     # 相対審査: clip_judge側で score=0 に落とされた物を除外（既に動的閾値適用済み）
     MIN_SCORE = 70.0  # eBay競合は70%未満を除外（誤検知防止）
