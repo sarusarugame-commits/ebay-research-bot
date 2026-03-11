@@ -119,7 +119,9 @@ def write_to_sheet(item_data):
         creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scopes)
         gc = gspread.authorize(creds)
         sh = gc.open_by_key(SPREADSHEET_ID)
-        ws = sh.worksheet(SHEET_NAME)
+        # シート名ではなくgidで直接指定（コピー後もズレない）
+        ws = sh.get_worksheet_by_id(49505613)
+        print(f"    [*] 接続シート: '{ws.title}' (gid={ws.id})")
     except Exception as e:
         print(f"    [!] Google Sheets接続失敗: {e}")
         return False
@@ -130,7 +132,7 @@ def write_to_sheet(item_data):
         exchange_rate = float(er_val) - 0.05  # 為替変動バッファ(-0.05円)
         print(f"    [*] 為替レート: {exchange_rate} 円/USD")
     except Exception:
-        exchange_rate = 150.0
+        exchange_rate = 157.49
         print(f"    [!] 為替レート取得失敗。デフォルト {exchange_rate} 円/USD を使用。")
 
     def mm_to_cm(val):
@@ -189,24 +191,24 @@ def write_to_sheet(item_data):
             print(f"    [SKIP] US(必要${h_min:.2f}>上限${h_max:.2f})・UK(必要${j_min:.2f}>上限${j_max:.2f})ともに6%達成不可。")
             return False
 
-        if uk_achievable:
-            j_usd = max(j_usd, j_min)
+        # J: UK達成可能なら必要最低値に引き上げ、不可でもj_minを記録として使用
+        j_usd = max(j_usd, j_min) if uk_achievable else j_min
 
-        # J確定後、実際のJ値でHを再計算（JがLに影響するため）
-        if us_achievable:
-            import math
-            lo, hi = j_usd, max(j_usd * 100, 500000)
-            for _ in range(80):
-                mid = (lo + hi) / 2
-                if calc_margin_us(mid, j_usd, exchange_rate, cost, us_shipping_jpy, is_high_tariff)[0] < TARGET_MARGIN:
-                    lo = mid
-                else:
-                    hi = mid
-            h_usd = math.ceil(hi * 100) / 100
+        # H: J確定後にUSが6%達成できる最低Hを二分探索で再計算
+        import math
+        lo, hi = j_usd, max(j_usd * 100, 500000)
+        for _ in range(80):
+            mid = (lo + hi) / 2
+            if calc_margin_us(mid, j_usd, exchange_rate, cost, us_shipping_jpy, is_high_tariff)[0] < TARGET_MARGIN:
+                lo = mid
+            else:
+                hi = mid
+        h_usd = math.ceil(hi * 100) / 100
 
         m_us, profit_us = calc_margin_us(h_usd, j_usd, exchange_rate, cost, us_shipping_jpy, is_high_tariff)
         m_uk, profit_uk = calc_margin_uk(h_usd, j_usd, exchange_rate, cost, uk_shipping_jpy)
-        print(f"    [ADJUST] H=${h_usd:.2f}(US最低${h_min:.2f}) J=${j_usd:.2f}(UK最低${j_min:.2f})")
+        print(f"    [ADJUST] H=${h_usd:.2f}(US最低${h_min:.2f}, 上限${h_max:.2f}) J=${j_usd:.2f}(UK最低${j_min:.2f}, 上限${j_max:.2f})")
+        print(f"    [ADJUST] US達成: {'✅' if us_achievable else '❌'} | UK達成: {'✅' if uk_achievable else '❌'}")
         print(f"    [ADJUST] US利益率: {m_us:.1%} | UK利益率: {m_uk:.1%}")
 
     if m_us < TARGET_MARGIN and m_uk < TARGET_MARGIN:
@@ -254,7 +256,38 @@ def write_to_sheet(item_data):
 
     try:
         ws.batch_update(cell_updates, value_input_option='USER_ENTERED')
-        print(f"    [SUCCESS] {target_row} 行目に書き込み完了。")
+
+        # 関税タイプ列（col 24）にドロップダウン検証を設定
+        tariff_col_idx = 24 - 1  # 0始まり
+        tariff_row_idx = target_row - 1
+        body = {
+            "requests": [{
+                "setDataValidation": {
+                    "range": {
+                        "sheetId": ws.id,
+                        "startRowIndex": tariff_row_idx,
+                        "endRowIndex":   tariff_row_idx + 1,
+                        "startColumnIndex": tariff_col_idx,
+                        "endColumnIndex":   tariff_col_idx + 1,
+                    },
+                    "rule": {
+                        "condition": {
+                            "type": "ONE_OF_LIST",
+                            "values": [
+                                {"userEnteredValue": "高関税"},
+                                {"userEnteredValue": "低関税"},
+                            ]
+                        },
+                        "showCustomUi": True,
+                        "strict": False,
+                    }
+                }
+            }]
+        }
+        ws.spreadsheet.batch_update(body)
+        GREEN = "\033[92m"
+        RESET = "\033[0m"
+        print(f"{GREEN}    [SUCCESS] {target_row} 行目に書き込み＋ドロップダウン設定完了。{RESET}")
         return True
     except Exception as e:
         print(f"    [!] 書き込み失敗: {e}")

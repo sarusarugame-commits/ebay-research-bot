@@ -10,6 +10,12 @@ if sys.platform == "win32":
 BLUE  = "\033[94m"
 RESET = "\033[0m"
 
+def hyperlink(url, text=None):
+    """OSC 8ハイパーリンク。Windows Terminal / VSCode対応。非対応端末はURLをそのまま表示。"""
+    raw = text if text else url
+    label = raw[:30] + "…" if len(raw) > 30 else raw
+    return f"\033]8;;{url}\033\\{BLUE}{label}{RESET}\033]8;;\033\\"
+
 import traceback
 import functools
 import os
@@ -42,7 +48,9 @@ from llm_namer import extract_product_name
 from shopping_api import search_rakuten, search_yahoo, scrape_yahoo_item
 from amazon_scraper import search_amazon, search_amazon_via_google, scrape_amazon_specs
 from llm_vision_judge import verify_model_match
-from excel_writer import write_to_sheet
+from sheets_writer import write_to_sheet
+GREEN = "\033[92m"
+RESET_GREEN = "\033[0m"
 
 def extract_specs_from_text(text):
     w, d = "不明", "不明"
@@ -104,6 +112,7 @@ def main():
     
     url = input("eBayの検索結果URLを入力してください:\n> ").strip()
     if not url: return
+    _start_time = datetime.datetime.now()
 
     print("\n[*] ブラウザの起動を確認中...")
     browser = get_browser_page()
@@ -147,7 +156,6 @@ def main():
         all_img_urls = ebay_specs_pre.get("img_urls") or []
         if not all_img_urls:
             all_img_urls = [target_item.get('image_url')]
-        print(f"\n[*] Gemma 3 が商品の安全性をチェックしています（アルコール/高関税素材）... ({len(all_img_urls)}枚)")
         safety_data = analyze_item_safety_and_tariff(all_img_urls[0], all_img_urls)
         
         # 判定結果の表示
@@ -195,7 +203,8 @@ def main():
 
         # 3. 商品名特定
         print("\n[*] AI を使用して日本語正式商品名を特定中...")
-        name_data = extract_product_name(target_item.get('title'), scored_candidates)
+        name_data = extract_product_name(target_item.get('title'), scored_candidates, img_url=img_url)
+
         final_name = name_data.get("full_name", "特定不能")
         print(f" -> 最終確定した日本語名: {final_name}")
 
@@ -232,23 +241,22 @@ def main():
         final_candidates = []
         weight_final = "不明"
         dims_final = "不明"
+        origin_final = "不明"
         tentative_best_item = None
         tentative_best_price = float('inf')
 
         if final_name and final_name != "特定不能":
-            # 検索用クエリの作成 (ブランド + 型番) を優先
-            # brand はLLMが誤変換することがあるため series+model+keywords を使う
-            series_model = f"{name_data.get('series', '')} {name_data.get('model', '')} {name_data.get('keywords', '')}".strip().replace('  ', ' ')
-            search_query = series_model if len(series_model) > 5 else final_name
-            
-            # 共通のフィルタリング用キーワード
-            filter_text = f"{name_data.get('series', '')} {name_data.get('model', '')} {name_data.get('keywords', '')}".strip()
+            # 検索クエリ = LLMが確定した日本語名をそのまま使う（keywordsはノイズになるため除外）
+            search_query = final_name
+
+            # フィルタリング用キーワード（型番・シリーズ名の一致判定に使用）
+            filter_text = f"{name_data.get('series', '')} {name_data.get('model', '')}".strip()
             import unicodedata
             def normalize_text(text):
                 return unicodedata.normalize('NFKC', text).lower()
 
             search_keywords = [normalize_text(k) for k in re.split(r'\s+', filter_text) if len(k) > 1]
-    # 全角スペースを含む空白文字全般で分割するよう \s に統一
+            # 全角スペースを含む空白文字全般で分割するよう \s に統一
             model_name = normalize_text(name_data.get('model', ''))
             series_name = normalize_text(name_data.get('series', ''))
 
@@ -261,16 +269,27 @@ def main():
 
                 print(f"[*] {platform}: {len(candidates)} 件の候補を詳細判定中 (基準: 加重平均 73%以上)")
                 
+                # 除外ワード（レンタル・パーツ・修理品など）
+                _EXCLUDE_WORDS = ["レンタル", "rental", "パーツ", "修理", "ジャンク", "部品取り"]
+
                 # 1. 商品名・型番判定 (厳格化)
                 keyword_filtered = []
                 for item in candidates:
                     title_norm = normalize_text(item.get("title", ""))
+
+                    # 除外ワードチェック
+                    if any(w in title_norm for w in _EXCLUDE_WORDS):
+                        print(f"    [SKIP] 除外ワード検出: {item.get('title', '')[:30]}...")
+                        continue
                     
                     # 型番または商品名（シリーズ名）が含まれているかをチェック
                     # 型番は3文字以上、シリーズ名は2文字以上を有効とする
                     has_model = (model_name in title_norm) if len(model_name) >= 3 else False
-                    has_series = (series_name in title_norm) if len(series_name) >= 2 else False
-                    
+                    # series_nameが複合語（スペース含む）の場合は先頭単語だけでも一致を許容
+                    series_head = normalize_text(series_name.split()[0]) if series_name.split() else ""
+                    has_series = (series_name in title_norm or (len(series_head) >= 2 and series_head in title_norm)) if len(series_name) >= 2 else False
+
+                    # 型番一致なら商品名不一致でも通す（表記揺れ対策）
                     if has_model or has_series:
                         keyword_filtered.append(item)
                     else:
@@ -291,11 +310,11 @@ def main():
                     page_url = item.get('page_url', '')
                     
                     if not page_url or not page_url.startswith("http"):
-                        print(f"    [SKIP] 無効なURL: {item_title[:20]} (URL: {page_url})")
+                        print(f"    [SKIP] 無効なURL: {item_title[:20]} (URL: {hyperlink(page_url)})")
                         continue
 
                     print(f"    [*] 候補精査: {item_title[:30]}")
-                    print(f"           URL: {BLUE}{page_url}{RESET}")
+                    print(f"           URL: {hyperlink(page_url)}")
                     
                     # 2. 詳細情報の取得 (画像5枚を取得するため)
                     detail = None
@@ -331,6 +350,8 @@ def main():
                     # ベストスコアのものを採用
                     best_ji = judged_imgs[0]
                     final_score = float(best_ji.get("score", 0))
+                    # 最高スコア画像URLをitemに保存（後のLLM検証で使用）
+                    item["best_img_url"] = best_ji.get("img_url")
                     
                     # デバッグ画像の保存
                     for i, ji in enumerate(judged_imgs[:3]):
@@ -342,7 +363,7 @@ def main():
                         print(f"    [REJECT] 類似度スコア0（model_serverで除外済み）")
                         continue
 
-                    print(f"    [MATCH] 検証合格 ({final_score:.1f}%) URL: {BLUE}{page_url}{RESET}")
+                    print(f"    [MATCH] 検証合格 ({final_score:.1f}%) URL: {hyperlink(page_url)}")
 
                     # 5. 送料計算と最安値更新
                     detail_price_str = str(item.get('price', '0'))
@@ -386,11 +407,10 @@ def main():
             return browser
 
         if final_name and final_name != "特定不能":
-            # brand はLLMが誤変換することがあるため series+model+keywords を使う
-            series_model = f"{name_data.get('series', '')} {name_data.get('model', '')} {name_data.get('keywords', '')}".strip().replace('  ', ' ')
-            search_query = series_model if len(series_model) > 5 else final_name
-            
-            filter_text = f"{name_data.get('series', '')} {name_data.get('model', '')} {name_data.get('keywords', '')}".strip()
+            # 検索クエリ = LLMが確定した日本語名をそのまま使う（keywordsはノイズになるため除外）
+            search_query = final_name
+
+            filter_text = f"{name_data.get('series', '')} {name_data.get('model', '')}".strip()
             import unicodedata
             def normalize_text(text):
                 return unicodedata.normalize('NFKC', text).lower()
@@ -439,6 +459,7 @@ def main():
         if dims_final == "不明" and raw_d != "不明": dims_final = adjust_dimensions(raw_d)
 
         # 5. 【最終補完】スペック情報（重量/サイズ）の補完
+        amz_urls_checked = []  # 参照したAmazon URLを収集
         if weight_final == "不明" or dims_final == "不明":
             # --- STEP 5.1: Amazon からの補完 ---
             print("\n[*] 重量またはサイズが不明なため、Amazonからスペック情報を補完中...")
@@ -448,30 +469,42 @@ def main():
                 amz_results = search_amazon(amz_search_query, browser, max_results=5)
                 
                 # 1. Amazon内検索でヒットした場合（画像あり）
-                if amz_results:
-                    amz_for_judge = [{"img_url": r.get("img_url", ""), "page_url": r.get("page_url", ""), "_orig": r} 
-                                     for r in amz_results if r.get("img_url")]
+                amz_for_judge = [{"img_url": r.get("img_url", ""), "page_url": r.get("page_url", ""), "_orig": r}
+                                 for r in amz_results if r.get("img_url")]
+
+                if amz_for_judge:
                     amz_judged = judge_similarity(img_url, amz_for_judge)
                     
                     if amz_judged and amz_judged[0] is not None and amz_judged[0].get("score", 0) >= 70:
                         best_amz = amz_judged[0]
                         amz_url = best_amz.get("page_url") or best_amz.get("_orig", {}).get("page_url")
                         if amz_url:
+                            amz_urls_checked.append(amz_url)
                             print(f"    [MATCH] Amazonで一致商品を発見 (Score: {best_amz['score']:.1f}%).")
                             amz_specs = scrape_amazon_specs(amz_url, browser)
                             if weight_final == "不明" and amz_specs.get("weight") != "不明":
                                 weight_final = truncate_weight(amz_specs["weight"])
                             if dims_final == "不明" and amz_specs.get("dimensions") != "不明":
                                 dims_final = adjust_dimensions(amz_specs["dimensions"])
-                
-                # 2. ヒットせず、Google経由で検索した場合（画像なし）
-                else:
+                            if amz_specs.get("origin", "不明") != "不明":
+                                origin_final = amz_specs["origin"]
+                                if re.search(r"中国|china", origin_final, re.I):
+                                    high_tariff_flag = True
+                                    print(f"    [⚠️ 原産地] {origin_final} → 高関税フラグを有効化")
+                    else:
+                        print("    [!] Amazon候補が類似度不足。Google経由で再検索します...", flush=True)
+                        amz_results = []  # Google経由フォールバックへ
+
+                # 2. 画像なし or 類似度不足 → Google経由
+                if not amz_for_judge or not amz_results:
                     print("    [!] Amazon内検索でヒットしないため、Google経由でAmazonを検索します...")
                     amz_google_results = search_amazon_via_google(amz_search_query, browser, max_results=3)
                     
                     if amz_google_results:
                         for r in amz_google_results:
                             amz_url = r.get("page_url")
+                            if amz_url:
+                                amz_urls_checked.append(amz_url)
                             print(f"    [*] Google経由で発見したページを解析中: {amz_url}")
                             
                             # --- 🌟 追加: Amazon詳細ページを開いて画像を直接取得し、判定する ---
@@ -503,6 +536,11 @@ def main():
                             if dims_final == "不明" and amz_specs.get("dimensions") != "不明":
                                 dims_final = adjust_dimensions(amz_specs["dimensions"])
                                 found_any = True
+                            if amz_specs.get("origin", "不明") != "不明":
+                                origin_final = amz_specs["origin"]
+                                if re.search(r"中国|china", origin_final, re.I):
+                                    high_tariff_flag = True
+                                    print(f"    [⚠️ 原産地] {origin_final} → 高関税フラグを有効化")
                                 
                             if found_any:
                                 print("    [MATCH] Google経由のAmazonページからスペックの補完に成功しました。")
@@ -538,7 +576,9 @@ def main():
                 _logo_patterns = ["static", "logo", "banner", "icon", "badge", "avatar", "profile"]
                 _raw_imgs = cand.get("img_urls") or ([cand.get("img_url")] if cand.get("img_url") else [])
                 _filtered = [u for u in _raw_imgs if u and not any(p in u.lower() for p in _logo_patterns)]
-                cand_img = (_filtered or _raw_imgs or [None])[0]
+                # DINOv2で最高スコアだった画像を優先、なければフィルタリング済み画像or先頭画像
+                cand_img = (cand.get("best_img_url")
+                            or (_filtered or _raw_imgs or [None])[0])
 
 
                 if not cand_img:
@@ -564,9 +604,6 @@ def main():
                 print("    [!] LLM検証で全候補が除外されました。最安値なしとして処理します。")
         # ====================================================================
         if best_item:
-            print("\n[*] 国内最安値が判明したため、eBay全体での競合最安値（US/UK）をチェックします...")
-
-
             print("\n[*] 国内最安値が判明したため、eBay全体での競合最安値（US/UK）をチェックします...")
             from validate_ebay_search_v3 import process_market, get_ebay_token
             
@@ -594,18 +631,18 @@ def main():
                 print(f"    [*] 国内最安値のコンディション: {best_item.get('condition')} -> eBay調査条件: {target_cond}")
                 
                 # US検索
-                us_top3 = process_market(token, "EBAY_US", final_en_name, img_url, target_cond, model_number=ebay_model_number)
+                us_top3 = process_market(token, "EBAY_US", final_en_name, img_url, target_cond, model_number=ebay_model_number, exclude_id=item_id)
                 # フォールバック: 新品で探していたが、結果が0件だった場合は中古で再試行
                 if target_cond == "NEW" and not us_top3:
                     print(f"    [!] USで新品が見つからないため、中古で再検索します...")
-                    us_top3 = process_market(token, "EBAY_US", final_en_name, img_url, "USED", model_number=ebay_model_number)
+                    us_top3 = process_market(token, "EBAY_US", final_en_name, img_url, "USED", model_number=ebay_model_number, exclude_id=item_id)
                 
                 # UK検索
-                uk_top3 = process_market(token, "EBAY_GB", final_en_name, img_url, target_cond, model_number=ebay_model_number)
+                uk_top3 = process_market(token, "EBAY_GB", final_en_name, img_url, target_cond, model_number=ebay_model_number, exclude_id=item_id)
                 # フォールバック
                 if target_cond == "NEW" and not uk_top3:
                     print(f"    [!] UKで新品が見つからないため、中古で再検索します...")
-                    uk_top3 = process_market(token, "EBAY_GB", final_en_name, img_url, "USED", model_number=ebay_model_number)
+                    uk_top3 = process_market(token, "EBAY_GB", final_en_name, img_url, "USED", model_number=ebay_model_number, exclude_id=item_id)
 
                 # ミラーリングロジック
                 if us_top3 and not uk_top3:
@@ -628,7 +665,7 @@ def main():
                             print(f"  Rank {i}: {res['title'][:60]}...")
                             print(f"    - 合計価格: ${res['total_usd']:,.2f} USD (本体:{res['price']} {res['currency']} + 送料:{res['shipping']})")
                             print(f"    - 適合率:   {res['score']:.1f}%")
-                            print(f"    - URL:      {BLUE}{res['item_url']}{RESET}")
+                            print(f"    - URL:      {hyperlink(res['item_url'])}")
             else:
                 print("[!] eBay APIトークンが取得できなかったため、競合チェックをスキップします。")
         # 6. Excelへの自動書き込み
@@ -688,7 +725,7 @@ def main():
             print(f"{BLUE}■ プラットフォーム: {best_item.get('platform')}{RESET}")
             print(f"{BLUE}■ 商品タイトル    : {best_item.get('title')}{RESET}")
             print(f"{BLUE}■ 送料込み価格    : ¥{best_item.get('total_price', 0):,}{RESET}")
-            print(f"{BLUE}■ 商品URL         : {best_item.get('page_url')}{RESET}")
+            print(f"{BLUE}■ 商品URL         : {hyperlink(best_item.get('page_url'))}{RESET}")
             print(f"{BLUE}■ 加重平均スコア  : {best_item.get('score', 0):.1f}%{RESET}")
             print(f"{BLUE}■ 商品の状態      : {best_item.get('condition')}{RESET}")
         else:
@@ -700,10 +737,20 @@ def main():
             print(f"{BLUE}鉄・鋼鉄製品や本革製品は関税が高くなる可能性があるため、仕入れ前に再確認してください。{RESET}")
             
         print(f"{BLUE}{'-' * 60}{RESET}")
+        print(f"{BLUE}■ 原産地          : {origin_final}{RESET}")
         print(f"{BLUE}■ 推定重量        : {weight_final}{RESET}")
         print(f"{BLUE}■ 推定サイズ      : {dims_final}{RESET}")
+        if amz_urls_checked:
+            print(f"{BLUE}■ Amazon参照URL   :{RESET}")
+            for _au in amz_urls_checked:
+                print(f"{BLUE}  - {hyperlink(_au)}{RESET}")
+        else:
+            print(f"{BLUE}■ Amazon参照URL   : （参照なし）{RESET}")
         print(f"{BLUE}{'='*60}{RESET}")
         print(f"{BLUE}[*] データベースへの記録が完了しました。\n{RESET}")
+        _elapsed = datetime.datetime.now() - _start_time
+        _m, _s = divmod(int(_elapsed.total_seconds()), 60)
+        print(f"{BLUE}[*] 処理時間: {_m}分{_s}秒{RESET}")
 
     except Exception as e:
         print(f"\n[！重大なエラーが発生しました！]")
