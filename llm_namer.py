@@ -132,13 +132,13 @@ def extract_product_name(ebay_title, scored_candidates, img_url=None):
             if key not in seen:
                 seen.add(key)
                 deduped.append(word)
-        full_name = " ".join(deduped).strip()
+        full_name = " ".join(deduped).strip() or ebay_title
         print(f"    - 抽出成功: {full_name}")
         return {
             "brand": brand, "series": series, "model": model, "keywords": keywords,
             "full_name": full_name
         }
-    return {"brand": "", "series": "", "model": "", "keywords": "", "full_name": ebay_title.split()[0]}
+    return {"brand": "", "series": "", "model": "", "keywords": "", "full_name": ebay_title}
 
 def extract_english_product_name(ebay_title, scored_candidates):
     titles = [c['title'] for c in scored_candidates if c.get('title')]
@@ -167,9 +167,7 @@ def extract_english_product_name(ebay_title, scored_candidates):
                 if key not in seen:
                     seen.add(key)
                     deduped.append(word)
-            full_name = " ".join(deduped).strip()
+            full_name = " ".join(deduped).strip() or ebay_title
             print(f"    - 抽出成功: {full_name}")
             return {"brand": brand, "series": series, "model": model, "keywords": keywords, "full_name": full_name}
-    words = ebay_title.split()
-    model_candidate = next((w for w in words if any(c.isdigit() for c in w) and len(w) > 4), "")
-    return {"brand": words[0], "series": "", "model": model_candidate, "keywords": "", "full_name": f"{words[0]} {model_candidate}".strip()}
+    return {"brand": "", "series": "", "model": "", "keywords": "", "full_name": ebay_title}
