@@ -639,6 +639,29 @@ def main():
                     if target_cond == "NEW" and not top3:
                         print(f"    [!] {label}で新品が見つからないため、中古で再検索します...")
                         top3 = process_market(token, market_id, final_en_name, img_url, "USED", model_number=ebay_model_number, exclude_id=item_id, ebay_title=target_item.get('title', ''))
+                    
+                    # 結果が0件のとき、ターゲット自身を価格参照としてフォールバック
+                    if not top3:
+                        ebay_price = target_item.get("price")
+                        ebay_url   = f"https://www.ebay.com/itm/{item_id}"
+                        if ebay_price:
+                            try:
+                                # 文字列として受け取る可能性があるため変換
+                                price_val = float(str(ebay_price).replace(",", "").replace("$", "").strip())
+                                print(f"    [!] {label}: 競合0件のため、ターゲット自身の価格をフォールバックとして使用 (${price_val:.2f})")
+                                top3 = [{
+                                    "itemId":    item_id,
+                                    "title":     target_item.get("title", ""),
+                                    "price":     price_val,
+                                    "currency":  "USD",
+                                    "shipping":  0.0,
+                                    "total_usd": price_val,
+                                    "score":     100.0,
+                                    "item_url":  ebay_url,
+                                    "condition": target_cond,
+                                }]
+                            except Exception:
+                                pass
                     return top3
 
                 with ThreadPoolExecutor(max_workers=2) as ex:
