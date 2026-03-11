@@ -327,42 +327,42 @@ def process_market(token, market_id, query, ref_img, condition, model_number="",
     for c in scraped_candidates:
         c["img_urls"] = [c["img_url"]]
 
-    # 1.5 タイトルフィルター（画像判定前に除外してAPI/DINOコストを削減）
+    # 1.5 タイトルフィルター（画像判定前）
     if model_number:
         import re as _re
-        # model_numberのトークンを全て含むか確認（大文字小文字無視）
-        model_tokens = [t for t in model_number.lower().split() if len(t) >= 2]
-
-        # 世代識別子パターン: G2/G3/Mark II/MK2 etc.
         VARIANT_PATTERN = _re.compile(
             r'\b(G\d+|Mark\s*[IVX]+|MK\s*[23456]|MK\s*[IVX]+|Ver\.?\s*\d+|第\d+世代|Gen\.?\s*\d+)\b',
             _re.IGNORECASE
         )
-        # model_numberに含まれる世代識別子を抽出（許容リスト）
+        model_tokens = [t for t in model_number.lower().split() if len(t) >= 2]
         allowed_variants = set(v.lower() for v in VARIANT_PATTERN.findall(model_number))
 
-        filtered = []
+        clean, variant_ng = [], []
         for c in scraped_candidates:
             title_lower = c.get("title", "").lower()
-
-            # ①必須: model_numberの全トークンがタイトルに含まれるか
+            # 必須トークンが揃っていない → 完全除外
             if not all(t in title_lower for t in model_tokens):
-                print(f"    [TITLE SKIP] 型番トークン不一致: {c.get('title','')[:50]}")
+                print(f"    [TITLE SKIP] 型番不一致: {c.get('title','')[:50]}")
                 continue
-
-            # ②世代違いを除外: タイトルに含まれる世代識別子がallowedにない場合は除外
+            # 世代違いあり → 隔離
             title_variants = set(v.lower() for v in VARIANT_PATTERN.findall(c.get("title", "")))
             unknown_variants = title_variants - allowed_variants
             if unknown_variants:
-                print(f"    [TITLE SKIP] 世代違い({', '.join(unknown_variants)}): {c.get('title','')[:50]}")
-                continue
+                print(f"    [TITLE WARN] 世代違い({', '.join(unknown_variants)}): {c.get('title','')[:50]}")
+                variant_ng.append(c)
+            else:
+                clean.append(c)
 
-            filtered.append(c)
-
-        if filtered:
-            scraped_candidates = filtered
+        if clean:
+            # クリーン候補があれば世代違いを除外
+            print(f"    [*] タイトルフィルター: {len(clean)} 件クリーン / {len(variant_ng)} 件世代違いを除外")
+            scraped_candidates = clean
+        elif variant_ng:
+            # クリーン候補ゼロ → 世代違いも通してLLMで判定させる
+            print(f"    [!] クリーン候補なし。世代違い {len(variant_ng)} 件をLLM判定に委ねます。")
+            scraped_candidates = variant_ng
         else:
-            print(f"    [!] タイトルフィルター後に候補なし。フィルターを無効化して続行。")
+            print(f"    [!] タイトルフィルター後に候補なし。元の候補をそのまま使用。")
 
     # 2. 画像判定 (DINOv2)
     print(f"    [*] {market_id}: {len(scraped_candidates)} 件の候補を画像判定中...")
