@@ -370,12 +370,7 @@ def process_market(token, market_id, query, ref_img, condition, model_number="",
         else:
             print(f"    [!] タイトルフィルター後に候補なし。元の候補をそのまま使用。")
 
-    # 1.7 exclude_idを事前除外（DINOv2の適応閾値に自己比較スコアが影響するのを防ぐ）
-    if exclude_id:
-        before_count = len(scraped_candidates)
-        scraped_candidates = [c for c in scraped_candidates if str(c.get("itemId", "")) != str(exclude_id)]
-        if len(scraped_candidates) < before_count:
-            print(f"    [*] ターゲット自身を除外しました (ID: {exclude_id})")
+
 
     # 1.8 詳細ページから複数画像取得（タイトルフィルター通過済み候補のみ）
     browser = get_browser_page()
@@ -399,9 +394,7 @@ def process_market(token, market_id, query, ref_img, condition, model_number="",
     judged = judge_similarity(ref_img, scraped_candidates)
     
     # 相対審査: clip_judge側で score=0 に落とされた物を除外（既に動的閾値適用済み）
-    # 自分のeBay商品IDを除外
-    if exclude_id:
-        judged = [m for m in judged if str(m.get("itemId", "")) != str(exclude_id)]
+    # exclude_idは使用しない（ターゲット自身もeBay競合価格の対象として有効）
     MIN_SCORE = 70.0  # eBay競合は70%未満を除外（誤検知防止）
     top_matches = [m for m in judged if m.get("score", 0) >= MIN_SCORE]
     if not top_matches:
