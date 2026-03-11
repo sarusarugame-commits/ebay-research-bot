@@ -282,6 +282,8 @@ def verify_model_match(ref_img_url, candidate_img_url, model_number, condition_t
                 condition = data.get("condition", "Good")
                 label = "✅ 一致" if is_match else "❌ 不一致"
                 print(f"    [LLM/Gemini] {label} | 判定状態: {condition} | 理由: {data.get('reason','不明')}")
+                print(f"      参照画像: {ref_img_url}")
+                print(f"      候補画像: {candidate_img_url}")
                 return is_match, condition
 
     print(f"    [*] Gemini失敗 → Qwen ({QWEN_MODEL}) でリトライします...")
@@ -297,6 +299,8 @@ def verify_model_match(ref_img_url, candidate_img_url, model_number, condition_t
             condition = data.get("condition", "Good")
             label = "✅ 一致" if is_match else "❌ 不一致"
             print(f"    [LLM/Qwen] {label} | 判定状態: {condition} | 理由: {data.get('reason','不明')}")
+            print(f"      参照画像: {ref_img_url}")
+            print(f"      候補画像: {candidate_img_url}")
             return is_match, condition
 
     return True, "Good"
