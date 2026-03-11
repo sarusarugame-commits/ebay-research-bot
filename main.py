@@ -1,5 +1,8 @@
 import gpu_utils
 import sys
+BLUE  = "\033[94m"
+RESET = "\033[0m"
+
 import io
 import re
 import datetime
@@ -288,7 +291,7 @@ def main():
                         continue
 
                     print(f"    [*] 候補精査: {item_title[:30]}")
-                    print(f"           URL: {page_url}")
+                    print(f"           URL: {BLUE}{page_url}{RESET}")
                     
                     # 2. 詳細情報の取得 (画像5枚を取得するため)
                     detail = None
@@ -331,11 +334,11 @@ def main():
                         img_filename = f"{platform}_{item_title[:10]}_{i}_score_{s:.1f}.jpg".replace("/", "_").replace(" ", "_")
                         save_debug_image(ji.get("img_url"), debug_folder, img_filename)
 
-                    if final_score < 73:
-                        print(f"    [REJECT] 最終加重スコア不足 ({final_score:.1f}%)")
+                    if final_score <= 0:
+                        print(f"    [REJECT] 類似度スコア0（model_serverで除外済み）")
                         continue
 
-                    print(f"    [MATCH] 検証合格 ({final_score:.1f}%) URL: {page_url}")
+                    print(f"    [MATCH] 検証合格 ({final_score:.1f}%) URL: {BLUE}{page_url}{RESET}")
 
                     # 5. 送料計算と最安値更新
                     detail_price_str = str(item.get('price', '0'))
@@ -627,7 +630,7 @@ def main():
                             print(f"  Rank {i}: {res['title'][:60]}...")
                             print(f"    - 合計価格: ${res['total_usd']:,.2f} USD (本体:{res['price']} {res['currency']} + 送料:{res['shipping']})")
                             print(f"    - 適合率:   {res['score']:.1f}%")
-                            print(f"    - URL:      {res['item_url']}")
+                            print(f"    - URL:      {BLUE}{res['item_url']}{RESET}")
             else:
                 print("[!] eBay APIトークンが取得できなかったため、競合チェックをスキップします。")
         # 6. Excelへの自動書き込み
@@ -664,34 +667,34 @@ def main():
         else:
             print("\n[!] 国内最安値が見つからなかったため、Excelへの書き込みをスキップします。")
 
-        print("\n" + "="*60)
-        print("                 ✨ リサーチ完了 ✨")
-        print("="*60)
-        print(f"■ eBay商品 ID  : {item_id}")
-        print(f"■ 判定した商品名: {final_name}")
-        print("-" * 60)
+        print(f"{BLUE}\n{'='*60}{RESET}")
+        print(f"{BLUE}                 ✨ リサーチ完了 ✨{RESET}")
+        print(f"{BLUE}{'='*60}{RESET}")
+        print(f"{BLUE}■ eBay商品 ID  : {item_id}{RESET}")
+        print(f"{BLUE}■ 判定した商品名: {final_name}{RESET}")
+        print(f"{BLUE}{'-' * 60}{RESET}")
         
         if best_item:
-            print(f"【！国内最安値確定商品！】")
-            print(f"■ プラットフォーム: {best_item.get('platform')}")
-            print(f"■ 商品タイトル    : {best_item.get('title')}")
-            print(f"■ 送料込み価格    : ¥{best_item.get('total_price', 0):,}")
-            print(f"■ 商品URL         : {best_item.get('page_url')}")
-            print(f"■ 加重平均スコア  : {best_item.get('score', 0):.1f}%")
-            print(f"■ 商品の状態      : {best_item.get('condition')}")
+            print(f"{BLUE}【！国内最安値確定商品！】{RESET}")
+            print(f"{BLUE}■ プラットフォーム: {best_item.get('platform')}{RESET}")
+            print(f"{BLUE}■ 商品タイトル    : {best_item.get('title')}{RESET}")
+            print(f"{BLUE}■ 送料込み価格    : ¥{best_item.get('total_price', 0):,}{RESET}")
+            print(f"{BLUE}■ 商品URL         : {best_item.get('page_url')}{RESET}")
+            print(f"{BLUE}■ 加重平均スコア  : {best_item.get('score', 0):.1f}%{RESET}")
+            print(f"{BLUE}■ 商品の状態      : {best_item.get('condition')}{RESET}")
         else:
-            print(" domestic lowest price NOT found (類似の商品が見つかりませんでした)。")
+            print(f"{BLUE} domestic lowest price NOT found (類似の商品が見つかりませんでした)。{RESET}")
         
         if high_tariff_flag:
-            print(f"\n【⚠️ 重要：高関税注意】")
-            print(f"この商品は AI により「{material_label}」素材である可能性が高いと判定されました。")
-            print(f"鉄・鋼鉄製品や本革製品は関税が高くなる可能性があるため、仕入れ前に再確認してください。")
+            print(f"{BLUE}\n【⚠️ 重要：高関税注意】{RESET}")
+            print(f"{BLUE}この商品は AI により「{material_label}」素材である可能性が高いと判定されました。{RESET}")
+            print(f"{BLUE}鉄・鋼鉄製品や本革製品は関税が高くなる可能性があるため、仕入れ前に再確認してください。{RESET}")
             
-        print("-" * 60)
-        print(f"■ 推定重量        : {weight_final}")
-        print(f"■ 推定サイズ      : {dims_final}")
-        print("="*60)
-        print("[*] データベースへの記録が完了しました。\n")
+        print(f"{BLUE}{'-' * 60}{RESET}")
+        print(f"{BLUE}■ 推定重量        : {weight_final}{RESET}")
+        print(f"{BLUE}■ 推定サイズ      : {dims_final}{RESET}")
+        print(f"{BLUE}{'='*60}{RESET}")
+        print(f"{BLUE}[*] データベースへの記録が完了しました。\n{RESET}")
 
     except Exception as e:
         print(f"\n[！重大なエラーが発生しました！]")
