@@ -1,4 +1,8 @@
 import urllib.parse
+ 
+BLUE = "\033[94m"
+RESET = "\033[0m"
+
 
 def search_surugaya(keyword, browser_page, max_results=10):
     """駿河屋検索 (司令官流：DrissionPageネイティブ＆スマート待機版)"""
@@ -44,7 +48,7 @@ def search_surugaya(keyword, browser_page, max_results=10):
 
 def scrape_surugaya_item(url, browser_page):
     """駿河屋詳細抽出 (DrissionPageネイティブ版)"""
-    print(f"    [SCRAPE_DEBUG] 駿河屋詳細アクセス: {url}")
+    print(f"    [SCRAPE_DEBUG] 駿河屋詳細アクセス: {BLUE}{url}{RESET}")
     try:
         browser_page.get(url)
         

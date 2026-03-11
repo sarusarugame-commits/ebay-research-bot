@@ -8,6 +8,16 @@ from bs4 import BeautifulSoup
 
 _browser_instance = None
 
+def _set_ebay_language(browser):
+    """eBayブラウザセッションを英語UIに固定する"""
+    try:
+        tab = browser.latest_tab
+        tab.get("https://www.ebay.com/language?lang=en-US")
+        tab.wait(1.5)
+        print("[*] eBay言語を英語に設定しました。", flush=True)
+    except Exception as e:
+        print(f"[!] eBay言語設定失敗（無視して続行）: {e}", flush=True)
+
 def handle_ebay_popups(tab):
     """eBay特有のポップアップ（配送先確認など）を処理する。"""
     try:
@@ -33,15 +43,16 @@ def get_browser_page():
         except: _browser_instance = None
 
     co = ChromiumOptions().set_local_port(9222)
-    # 全画面起動を抑制し、指定サイズで起動するように設定
     co.set_argument('--window-size=1280,720')
     co.remove_argument('--start-maximized')
-    # ポート9222接続時は動作確認しやすくするため headless(False) ですが、全画面は防ぎます
-    co.headless(False)
+    co.headless(True)
+    co.set_argument('--lang=en-US')
+    co.set_argument('--accept-lang=en-US,en;q=0.9')
 
     try:
         print("[*] ブラウザ(9222)に接続中...", flush=True)
         _browser_instance = ChromiumPage(co)
+        _set_ebay_language(_browser_instance)
         return _browser_instance
     except Exception as e:
         print(f"[*] ブラウザ(9222)への接続に失敗しました: {type(e).__name__}: {e}", flush=True)
@@ -49,8 +60,23 @@ def get_browser_page():
         try:
             co_new = ChromiumOptions()
             co_new.headless(True)
-            # ブラウザのパスを自動探索させるが、失敗時のログを出す
+            co_new.set_argument('--no-sandbox')
+            co_new.set_argument('--disable-dev-shm-usage')
+            # Windowsの主要なChromeインストール先を順番に探索
+            import os
+            chrome_paths = [
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+                r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            ]
+            for path in chrome_paths:
+                if os.path.exists(path):
+                    print(f"[*] ブラウザ検出: {path}", flush=True)
+                    co_new.set_browser_path(path)
+                    break
             _browser_instance = ChromiumPage(co_new)
+            _set_ebay_language(_browser_instance)
             return _browser_instance
         except Exception as e2:
             print(f"[!] 新規ブラウザの起動に失敗しました: {e2}", flush=True)
@@ -114,8 +140,31 @@ def scrape_ebay_item_specs(item_id, browser):
             val = value_div.get_text(strip=True)
             if "weight" in label_text: specs["weight"] = val
             elif "dimensions" in label_text or "size" in label_text: specs["dimensions"] = val
+        
+        # 複数画像URL取得（最大5枚）
+        img_urls = []
+        # パターン1: data-idx属性付きbutton内のimg
+        for btn in soup.select('button[data-idx] img, div.ux-image-carousel-item img'):
+            src = btn.get('data-zoom-src') or btn.get('src') or ''
+            if src and 's-l' in src and src not in img_urls:
+                # サムネイルをフルサイズに変換
+                src = re.sub(r's-l\d+', 's-l500', src)
+                img_urls.append(src)
+            if len(img_urls) >= 5: break
+        # パターン2: JSON内のimageUrl
+        if not img_urls:
+            json_matches = re.findall(r'"imageUrl"\s*:\s*"(https://i\.ebayimg\.com[^"]+)"', tab.html)
+            seen = set()
+            for u in json_matches:
+                u = re.sub(r's-l\d+', 's-l500', u)
+                if u not in seen:
+                    seen.add(u)
+                    img_urls.append(u)
+                if len(img_urls) >= 5: break
+        specs["img_urls"] = img_urls
+        
         tab.close()
-        print(f" -> スペック取得完了。", flush=True)
+        print(f" -> スペック取得完了（画像{len(img_urls)}枚）。", flush=True)
         return specs
     except Exception as e:
         print(f"[!] 詳細パース失敗: {e}", flush=True)
@@ -123,7 +172,7 @@ def scrape_ebay_item_specs(item_id, browser):
 
 def scrape_ebay_newest_items(url, browser):
     import urllib.parse
-    
+
     # URLに配送先強制パラメータを追加
     parsed_url = urllib.parse.urlparse(url)
     params = urllib.parse.parse_qs(parsed_url.query)
@@ -210,6 +259,7 @@ def scrape_ebay_newest_items(url, browser):
                     title_tag = container.find(['h3', 'div', 'span'], class_=re.compile(r'title', re.I))
                     raw_title = title_tag.get_text(strip=True) if title_tag else "Unknown"
                     title = re.sub(r'Opens in a new window or tab|Opens in a new window|New Listing', '', raw_title, flags=re.IGNORECASE).strip()
+                    title = re.sub(r'新しいウィンドウまたはタブに表示されます|新しいウィンドウまたはタブで開く|新出品', '', title).strip()
                     
                     if "Shop on eBay" in title or not title or len(title) < 5: 
                         continue

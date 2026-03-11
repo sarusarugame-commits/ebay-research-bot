@@ -12,30 +12,40 @@ def search_by_google_lens(image_url, browser, max_results=5):
         # 日本語結果を優先させるため lr=lang_ja と hl=ja を付与
         tab = browser.new_tab(f"https://www.google.com/searchbyimage?image_url={image_url}&client=app&lr=lang_ja&hl=ja")
         tab.wait.load_start()
-        tab.wait(3) # レンダリング待ち
-        
-        # リンク一覧を抽出 (新セレクタ: a.LBcIee)
-        tab.scroll.to_bottom() # 少しスクロールして読み込みを促す
-        time.sleep(2)
-        
+        tab.wait(2)
+        tab.scroll.to_bottom()
+        tab.wait(2)
+
         pref_domains = ["mercari.com", "rakuten.co.jp", "yahoo.co.jp", "shopping.yahoo.co.jp", "paypayfleamarket.yahoo.co.jp", "fril.jp", "amazon.co.jp"]
-        items = tab.eles('css:a.LBcIee')
+
+        # Googleは頻繁にクラス名を変えるため複数セレクタを試す
+        candidate_selectors = [
+            'css:a.LBcIee',
+            'css:a.cz3goc',
+            'css:div.g a',
+            'css:div.tF2Cxc a',
+            'css:div.yuRUbf a',
+        ]
+        items = []
+        for sel in candidate_selectors:
+            items = tab.eles(sel, timeout=2)
+            if items:
+                print(f"    [Lens] セレクタ '{sel}' で {len(items)} 件取得", flush=True)
+                break
+        if not items:
+            print(f"    [Lens] セレクタ未ヒット。全aタグからフィルタリングします", flush=True)
+            items = tab.eles('tag:a', timeout=2)
+
         for item in items:
             href = item.attr('href')
-            if not href: continue
-            
-            # 国内ドメインに絞り込み
+            if not href or not href.startswith('http'): continue
             if any(domain in href for domain in pref_domains):
                 title_ele = item.ele('css:div[role="heading"]', timeout=1)
                 text = title_ele.text.strip() if title_ele else item.text.strip()
-                
-                # 画像URL (サムネイル) を取得
                 img_ele = item.ele('tag:img', timeout=1)
                 img_url = img_ele.attr('src') if img_ele else ""
-                
                 if len(text) > 5:
                     results.append({"page_url": href, "title": text, "snippet": "", "img_url": img_url})
-                
             if len(results) >= max_results: break
         tab.close()
         print(f" -> Google Lens で国内サイトを {len(results)} 件抽出しました。", flush=True)
@@ -78,16 +88,11 @@ def find_similar_images_on_web(image_uri, browser, max_results=5, force_lens=Fal
                     "lashinbang.com", "animate-onlineshop.jp", "amiami.jp",
                     "ec.line.me", "d-shopping.docomo.ne.jp", "qoo10.jp", "zara.com/jp"
                 ]
-                import re
-                jp_pattern = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]')
-                
                 for page in response.web_detection.pages_with_matching_images:
                     url = page.url
                     title = page.page_title
                     is_pref_domain = any(domain in url for domain in pref_domains)
-                    has_jp_chars = bool(jp_pattern.search(title))
-                    
-                    if is_pref_domain or has_jp_chars:
+                    if is_pref_domain:
                         results.append({"page_url": url, "title": title, "snippet": "", "img_url": ""})
                     
                     if len(results) >= max_results:
@@ -164,17 +169,17 @@ def search_global_images_by_lens(image_uri, browser, max_results=5):
     else:
         print("[*] Vision APIの認証情報がないためAPI検索をスキップします...", flush=True)
 
-    # 2. 補填 (Google Lens Global版)
-    if len(results) < max_results:
+    # 2. 補填 (Google Lens Global版) - Vision APIで5件取れたらスキップ
+    if len(results) < max_results and len(results) == 0:  # Vision API完全失敗時のみ補填
         needed = max_results - len(results)
         print(f"[*] 海外候補が {max_results} 件に満たないため、Google Lens (Global版) で残り {needed} 件を補填検索します...", flush=True)
         
         try:
             tab = browser.new_tab(f"https://www.google.com/searchbyimage?image_url={image_uri}&client=app&hl=en")
             tab.wait.load_start()
-            tab.wait(3) 
-            tab.scroll.to_bottom() 
-            time.sleep(2)
+            tab.wait(1)
+            tab.scroll.to_bottom()
+            tab.wait(1)
             
             jp_domains = ["mercari.com", "rakuten.co.jp", "yahoo.co.jp", "fril.jp", "amazon.co.jp", ".jp/"]
             items = tab.eles('css:a.LBcIee')

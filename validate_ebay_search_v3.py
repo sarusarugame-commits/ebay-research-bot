@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from config import EBAY_APP_ID, EBAY_CLIENT_SECRET
-from clip_judge import judge_similarity
+from clip_judge_client import judge_similarity
 from llm_vision_judge import verify_model_match
 from ebay_scraper import get_browser_page
 
@@ -23,23 +23,6 @@ from ebay_scraper import get_browser_page
 # False = 本来の仕様: USは ebay.com、UKは ebay.co.uk の現地サイトを使い分ける
 USE_STRICT_CLIENT_MODE = True
 # ======================================================================
-
-def get_gbp_to_usd_rate(fallback=1.27):
-    """Frankfurter API (無料・APIキー不要) からGBP→USDの最新レートを取得する"""
-    try:
-        r = requests.get(
-            "https://api.frankfurter.dev/v1/latest",
-            params={"base": "GBP", "symbols": "USD"},
-            timeout=5
-        )
-        if r.status_code == 200:
-            rate = r.json()["rates"]["USD"]
-            print(f"    [*] GBP→USDレート取得: {rate} (Frankfurter API)")
-            return rate
-    except Exception as e:
-        print(f"    [!] 為替レート取得失敗、固定値({fallback})を使用: {e}")
-    return fallback
-
 
 def get_ebay_token():
     if not EBAY_APP_ID or not EBAY_CLIENT_SECRET:
@@ -341,8 +324,9 @@ def process_market(token, market_id, query, ref_img, condition, model_number="")
     print(f"    [*] {market_id}: {len(scraped_candidates)} 件の候補を画像判定中...")
     judged = judge_similarity(ref_img, scraped_candidates)
     
-    top_matches = [m for m in judged if m.get("score", 0) >= 70]
-    if not top_matches: 
+    # 相対審査: clip_judge側で score=0 に落とされた物を除外（既に動的閾値適用済み）
+    top_matches = [m for m in judged if m.get("score", 0) > 0]
+    if not top_matches:
         print(f"    [-] 画像判定で合格した候補がありませんでした。")
         return []
     
@@ -394,7 +378,7 @@ def process_market(token, market_id, query, ref_img, condition, model_number="")
                 verified.append(cand)
                 continue
 
-            if verify_model_match(ref_img, cand_img, model_number, condition_text="")[0]:
+            if verify_model_match(ref_img, cand_img, model_number):
                 verified.append(cand)
             else:
                 print(f"    [LLM REJECT] 型番不一致のため除外: {cand.get('title','')[:50]}")

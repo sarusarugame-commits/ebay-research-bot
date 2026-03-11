@@ -6,18 +6,40 @@ import logging
 logger = logging.getLogger(__name__)
 
 def search_amazon(keyword, browser_page, max_results=5):
-    """Amazon.jp で商品を検索し、候補リストを返す"""
+    """Amazon.jp で商品を検索し、候補リストを返す（requests優先）"""
+    import requests as req
+    from html.parser import HTMLParser
     url = f"https://www.amazon.co.jp/s?k={re.sub(r'[\s　]+', '+', keyword)}"
     logger.info(f"    [*] Amazon検索中: {url}")
-    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "ja-JP,ja;q=0.9",
+    }
+    try:
+        r = req.get(url, headers=headers, timeout=8)
+        html = r.text
+        results = []
+        # ASIN抽出
+        asins = re.findall(r'data-asin="([A-Z0-9]{10})"', html)
+        titles = re.findall(r'<h2[^>]*>.*?<a[^>]*href="(/dp/[^"]+)"[^>]*>.*?<span[^>]*>([^<]+)</span>', html, re.S)
+        seen = set()
+        for href, title in titles:
+            base = "https://www.amazon.co.jp" + href.split('?')[0]
+            if base in seen: continue
+            seen.add(base)
+            results.append({"platform": "Amazon", "title": title.strip(), "page_url": base, "img_url": ""})
+            if len(results) >= max_results: break
+        if results:
+            return results
+    except Exception as e:
+        logger.debug(f"    [requests] Amazon検索失敗: {e}")
+
+    # フォールバック: ブラウザ
     try:
         browser_page.get(url)
-        # 検索結果が出るまで少し待機
         browser_page.wait.ele_displayed('css:[data-component-type="s-search-result"]', timeout=10)
-        
         results = []
         items = browser_page.eles('css:[data-component-type="s-search-result"]')
-        
         for item in items[:max_results]:
             try:
                 title_ele = item.ele('css:h2 a')
@@ -25,20 +47,11 @@ def search_amazon(keyword, browser_page, max_results=5):
                 page_url = title_ele.attr('href')
                 if page_url.startswith('/'):
                     page_url = "https://www.amazon.co.jp" + page_url
-                
                 img_ele = item.ele('css:img.s-image')
-                img_url = img_ele.attr('src')
-                
-                results.append({
-                    "platform": "Amazon",
-                    "title": title,
-                    "page_url": page_url,
-                    "img_url": img_url
-                })
-            except Exception as e:
-                logger.debug(f"      [SKIP] Amazonアイテムパースエラー: {e}")
+                img_url = img_ele.attr('src') if img_ele else ""
+                results.append({"platform": "Amazon", "title": title, "page_url": page_url, "img_url": img_url})
+            except:
                 continue
-                
         return results
     except Exception as e:
         logger.error(f"    [!] Amazon検索エラー: {e}")
@@ -90,24 +103,44 @@ def search_amazon_via_google(keyword, browser_page, max_results=3):
         logger.error(f"    [!] Google経由のAmazon検索エラー: {e}")
         return []
 
+def _get_amazon_html(url, browser_page):
+    """requestsでAmazonのHTMLを取得、失敗時はブラウザにフォールバック"""
+    import requests as req
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "ja-JP,ja;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    try:
+        r = req.get(url, headers=headers, timeout=8)
+        if r.status_code == 200 and "amazon" in r.url:
+            return r.text
+    except Exception as e:
+        logger.debug(f"    [requests] Amazon取得失敗: {e}")
+    # フォールバック: ブラウザ
+    browser_page.get(url)
+    body_ele = browser_page.ele('tag:body', timeout=8)
+    return body_ele.text if body_ele else ""
+
 def scrape_amazon_specs(url, browser_page):
     """Amazonの商品詳細ページからサイズと重量を抽出する"""
     logger.info(f"    [*] Amazon詳細ページ解析中: {url}")
     specs = {"weight": "不明", "dimensions": "不明"}
     
     try:
-        browser_page.get(url)
-        # ページ読み込み待機
-        time.sleep(2)
-        
-        # ページ全体のテキストを先に取得しておく（フォールバック用）
-        body_ele = browser_page.ele('tag:body')
-        full_text = body_ele.text if body_ele else ""
+        full_text = _get_amazon_html(url, browser_page)
+        # DOMが必要な場合のみブラウザ使用
+        body_ele = None
+        def _get_section_text(selector):
+            nonlocal body_ele
+            # まずfull_textから正規表現で探す（高速）
+            return full_text
         
         # 1. 箇条書き詳細 (detailBullets_feature_div) を探す
-        bullets_div = browser_page.ele('#detailBullets_feature_div')
-        if bullets_div:
-            text = bullets_div.text
+        # full_textから該当セクションを切り出す
+        bullets_match = re.search(r'((?:発送重量|商品の重量|本体重量|Item Weight|梱包サイズ|商品サイズ|商品の寸法).{0,500})', full_text, re.S)
+        if True:  # 常にfull_textを使用
+            text = full_text
             
             # 重量 (本体重量などを追加し、改行やスペースを許容)
             w_match = re.search(r"(?:発送重量|商品の重量|本体重量|Item Weight)\s*[:：]?\s*([\d.]+)\s*(g|kg|グラム|キロ)", text, re.I)
@@ -120,11 +153,10 @@ def scrape_amazon_specs(url, browser_page):
                 clean_dim = re.sub(r'\s+', ' ', d_match.group(1)).strip()
                 specs["dimensions"] = f"{clean_dim} {d_match.group(2)}"
 
-        # 2. テーブル形式 (prodDetails) を探す
+        # 2. テーブル形式 (prodDetails) を探す（full_textから）
         if specs["weight"] == "不明" or specs["dimensions"] == "不明":
-            table = browser_page.ele('#prodDetails')
-            if table:
-                text = table.text
+            if True:
+                text = full_text
                 if specs["weight"] == "不明":
                     w_match = re.search(r"(?:発送重量|商品の重量|本体重量|Item Weight)\s*[:：]?\s*([\d.]+)\s*(g|kg|グラム|キロ)", text, re.I)
                     if w_match: specs["weight"] = f"{w_match.group(1)}{w_match.group(2)}"
@@ -135,11 +167,10 @@ def scrape_amazon_specs(url, browser_page):
                         clean_dim = re.sub(r'\s+', ' ', d_match.group(1)).strip()
                         specs["dimensions"] = f"{clean_dim} {d_match.group(2)}"
 
-        # 3. テクニカルテーブル形式
+        # 3. テクニカルテーブル形式（full_textから）
         if specs["weight"] == "不明" or specs["dimensions"] == "不明":
-            tech_div = browser_page.ele('#productDetails_techSpec_section_1')
-            if tech_div:
-                text = tech_div.text
+            if True:
+                text = full_text
                 if specs["weight"] == "不明":
                     w_match = re.search(r"(?:重量|Weight)\s*[:：]?\s*([\d.]+)\s*(g|kg)", text, re.I)
                     if w_match: specs["weight"] = f"{w_match.group(1)}{w_match.group(2)}"

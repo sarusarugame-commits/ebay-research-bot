@@ -1,6 +1,5 @@
 import requests
 import time
-from urllib.parse import urlparse, parse_qs, unquote
 from config import RAKUTEN_APPLICATION_ID, RAKUTEN_ACCESS_KEY, RAKUTEN_AFFILIATE_ID, YAHOO_CLIENT_ID
 
 def search_rakuten(keyword):
@@ -59,7 +58,7 @@ def search_rakuten(keyword):
                     "price_int": price,
                     "total_price": total_price,
                     "condition": condition,
-                    "page_url": unquote(parse_qs(urlparse(item["itemUrl"]).query).get("pc", [item["itemUrl"]])[0]),
+                    "page_url": item["itemUrl"],
                     "img_urls": img_urls,
                     "shipping_included": True if ship_flag == 1 else False
                 })
@@ -110,7 +109,7 @@ def search_yahoo(keyword):
                     "price_int": price,
                     "total_price": total_price,
                     "condition": condition,
-                    "page_url": unquote(parse_qs(urlparse(item["url"]).query).get("pc", [item["url"]])[0]),
+                    "page_url": item["url"],
                     "img_urls": img_urls,
                     "shipping_included": is_free_shipping
                 })
@@ -131,7 +130,7 @@ def scrape_yahoo_item(url, browser_page):
         # 少し待機して読み込みを待つ
         time.sleep(1) 
         
-        for img in browser_page.eles('tag:img', timeout=5):
+        for img in browser_page.eles('tag:img', timeout=2):
             src = img.attr('src')
             if src and src.startswith("http") and src not in img_urls:
                 # 商品画像っぽいドメインを優先（shp.c.yimg.jp, item-shopping.c.yimg.jp 等）

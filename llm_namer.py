@@ -5,18 +5,20 @@ import re
 from collections import Counter
 from config import OPENROUTER_API_KEY
 
+JP_PATTERN = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\uFF00-\uFFEF]')
+
 def get_word_frequencies(titles):
-    """タイトル群から単語の出現頻度をカウントした辞書を返す"""
+    """タイトル群から日本語単語の出現頻度をカウントした辞書を返す"""
     all_words_raw = []
     for title in titles:
         # 記号を除去し、スペースで区切る
         clean_title = re.sub(r'[【】\[\]（）()!！?？♪☆★*＊/／¥,]+', ' ', title)
-        # 2文字以上の単語を抽出
-        words = [w for w in clean_title.split() if len(w) > 1]
+        # 2文字以上の単語を抽出（日本語文字を含むもののみ）
+        words = [w for w in clean_title.split() if len(w) > 1 and JP_PATTERN.search(w)]
         all_words_raw.extend(words)
     
-    counts = Counter(w.lower() for w in all_words_raw)
-    # 上位30個程度の頻出単語を抽出
+    counts = Counter(all_words_raw)  # 日本語は大文字小文字変換不要
+    # 2回以上出現した単語を抽出
     freq_list = {w: counts[w] for w in counts if counts[w] >= 2}
     return freq_list
 
@@ -92,7 +94,8 @@ def extract_product_name(ebay_title, scored_candidates):
         "2. 「brand」「series」「model」を明確に分けてください。\n"
         "3. 「keywords」は、色や限定版などの判別に不可欠な情報を3つ以内に絞って抽出してください（出現数3以上の単語を優先）。\n"
         "4. 必ず以下のJSON形式のみを出力してください（解説は一切不要）。\n"
-        "   {\"brand\": \"ブランド名\", \"series\": \"シリーズ名\", \"model\": \"型番\", \"keywords\": \"キーワード\"}"
+        "   {\"brand\": \"ブランド名\", \"series\": \"シリーズ名\", \"model\": \"型番\", \"keywords\": \"キーワード\"}\n"
+        "5. 【重要】brandは必ず正式なメーカー・ブランド名を使用してください。例：エポっち→エポック社、タカラ→タカラトミー、バンダイナムコ→バンダイ。略称・誤字・口語表現は必ず正式名称に修正してください。"
     )
 
     models = [

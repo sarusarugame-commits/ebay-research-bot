@@ -1,4 +1,6 @@
 import gpu_utils
+import warnings
+warnings.filterwarnings("ignore", message="xFormers is not available")
 import torch
 import torchvision.transforms as T
 from PIL import Image
@@ -229,12 +231,7 @@ def judge_similarity(ebay_img_url, scraped_items):
                 item["color_score"] = color_score
                 
                 item_url = item.get("page_url") or item.get("item_url") or item.get("item_affiliate_web_url") or "No URL"
-                if color_score < COLOR_GATE_THRESHOLD:
-                    print(f"    [REJECT] Color Score too low ({color_score:.1f}) | URL: {item_url}")
-                    item["score"] = 0
-                    results.append(item)
-                    continue
-                
+                # カラーゲートは廃止 → スコアだけ記録して全件DINOへ
                 cand_rgb = rgba_to_rgb_white_bg(cand_rgba)
                 valid_chunk_data.append((item, cand_rgba, cand_rgb))
                 
@@ -257,11 +254,6 @@ def judge_similarity(ebay_img_url, scraped_items):
                     
                     item["score"] = dino_score
                     item["dino_score"] = dino_score
-                    
-                    color_s = item.get("color_score", 0)
-                    item_url = item.get("page_url") or item.get("item_url") or item.get("item_affiliate_web_url") or "No URL"
-                    print(f"    [PASS] Color={color_s:.1f} | DINO={dino_score:.1f} => Final={dino_score:.1f}%")
-                    print(f"    [+] URL: {item_url}")
                     results.append(item)
                     
             except Exception as e:
@@ -269,6 +261,31 @@ def judge_similarity(ebay_img_url, scraped_items):
                 for item, _, _ in valid_chunk_data:
                     item["score"] = 0
                     results.append(item)
+
+    # ── 相対審査（パーセンタイル方式）──────────────────────────────
+    # 全候補のDINOスコア・カラースコアから動的閾値を計算する
+    scored = [r for r in results if r.get("dino_score", 0) > 0]
+    if scored:
+        dino_vals  = np.array([r["dino_score"]  for r in scored])
+        color_vals = np.array([r.get("color_score", 0) for r in scored])
+
+        # 上位30%のスコアを閾値とする（最低でも固定下限を設ける）
+        dino_thresh  = max(20.0, float(np.percentile(dino_vals,  70)))
+        color_thresh = max(15.0, float(np.percentile(color_vals, 70)))
+
+        print(f"    [ADAPTIVE] DINO閾値={dino_thresh:.1f}% (上位30%), Color閾値={color_thresh:.1f}% (上位30%)", flush=True)
+
+        for r in results:
+            d = r.get("dino_score",  0)
+            c = r.get("color_score", 0)
+            item_url = r.get("page_url") or r.get("item_url") or r.get("item_affiliate_web_url") or ""
+            if d >= dino_thresh and c >= color_thresh:
+                print(f"    [PASS] Color={c:.1f} | DINO={d:.1f} => Final={d:.1f}%")
+                print(f"    [+] URL: {item_url}")
+            else:
+                r["score"] = 0   # 閾値未満は score=0 に落とす
+                print(f"    [REJECT] Color={c:.1f}(閾値{color_thresh:.1f}) | DINO={d:.1f}(閾値{dino_thresh:.1f}) | {item_url[:60]}")
+    # ────────────────────────────────────────────────────────────────
 
     results.sort(key=lambda x: x.get("score", 0), reverse=True)
     return results

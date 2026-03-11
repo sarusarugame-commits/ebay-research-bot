@@ -1,7 +1,9 @@
 import sqlite3
 import os
 
-DB_PATH = 'researched_items.db'
+import os as _os
+# database.py自身と同じディレクトリにDBを置く（実行ディレクトリに依存しない）
+DB_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'researched_items.db')
 
 def get_connection():
     return sqlite3.connect(DB_PATH)
@@ -62,6 +64,21 @@ def mark_as_researched(item_id, platform=None, title=None, price=None, condition
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (item_id, platform, title, price, condition, url, weight, dimensions))
         conn.commit()
+    finally:
+        if 'conn' in locals() and conn:
+            conn.close()
+
+def delete_researched_item(item_id):
+    """リサーチに失敗した場合などにDBから削除する"""
+    if not item_id: return
+    try:
+        conn = get_connection()
+        c = conn.cursor()
+        c.execute("DELETE FROM items WHERE item_id = ?", (item_id,))
+        conn.commit()
+        print(f"[*] DBロールバック: 商品 ID {item_id} をリサーチ済みリストから削除しました。")
+    except Exception as e:
+        print(f"[!] DBロールバック失敗: {e}")
     finally:
         if 'conn' in locals() and conn:
             conn.close()

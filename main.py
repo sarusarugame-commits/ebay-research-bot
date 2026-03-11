@@ -27,7 +27,7 @@ from ebay_api import get_item_details
 from mercari_scraper import search_mercari, search_rakuma, scrape_item_data
 from surugaya_scraper import search_surugaya, scrape_surugaya_item
 from llm_vision_judge import estimate_weight_with_llm, analyze_item_safety_and_tariff
-from clip_judge import judge_similarity
+from clip_judge_client import judge_similarity
 # verify_with_lightglue は clip_judge 内で使われるようになったよ！
 from ebay_scraper import scrape_ebay_newest_items, scrape_ebay_item_specs, get_browser_page
 from vision_search import find_similar_images_on_web
@@ -35,7 +35,7 @@ from llm_namer import extract_product_name
 from shopping_api import search_rakuten, search_yahoo, scrape_yahoo_item
 from amazon_scraper import search_amazon, search_amazon_via_google, scrape_amazon_specs
 from llm_vision_judge import verify_model_match
-from sheets_writer import write_to_sheet as write_to_excel
+from excel_writer import write_to_sheet
 
 def extract_specs_from_text(text):
     w, d = "不明", "不明"
@@ -114,10 +114,15 @@ def main():
             return
             
         items.sort(key=lambda x: x.get('timestamp', datetime.datetime.min), reverse=False)
-        target_item = items[0] if items else None
-        # for item in items:
-        #     if not database.is_researched(item.get('id')):
-        #         target_item = item; break
+        target_item = None
+        for item in items:
+            item_id_check = item.get('id')
+            print(f"    [DB_CHECK] ID={item_id_check} -> is_researched={database.is_researched(item_id_check)}", flush=True)
+            if database.is_researched(item_id_check):
+                print(f"    [SKIP] 調査済み: {item_id_check} {item.get('title','')[:40]}")
+            else:
+                target_item = item
+                break
         
         if not target_item:
             print("\n[OK] 指定されたURL内の全商品はすでにリサーチ済みです。")
@@ -130,9 +135,13 @@ def main():
         print(f" 画像URL: {target_item.get('image_url')}")
         print("-" * 50)
         
-        # 1.5 安全性・関税チェック (Gemma 3 Vision)
-        print("\n[*] Gemma 3 が商品の安全性をチェックしています（アルコール/高関税素材）...")
-        safety_data = analyze_item_safety_and_tariff(target_item.get('image_url'))
+        # 1.5 安全性・関税チェック (Gemma 3 Vision) - 複数画像対応
+        ebay_specs_pre = scrape_ebay_item_specs(item_id, browser)
+        all_img_urls = ebay_specs_pre.get("img_urls") or []
+        if not all_img_urls:
+            all_img_urls = [target_item.get('image_url')]
+        print(f"\n[*] Gemma 3 が商品の安全性をチェックしています（アルコール/高関税素材）... ({len(all_img_urls)}枚)")
+        safety_data = analyze_item_safety_and_tariff(all_img_urls[0], all_img_urls)
         
         # 判定結果の表示
         print(f"    - アルコール判定: {'あり (⚠️ SKIP)' if safety_data.get('is_alcohol') else 'なし'}")
@@ -150,11 +159,12 @@ def main():
         if high_tariff_flag:
             print(f"\n[⚠️ ATTENTION] 高関税対象素材（{material_label}）の可能性があります。")
         
-        # スペック収集
-        ebay_specs = scrape_ebay_item_specs(item_id, browser)
+        # スペック収集（安全性チェック時に取得済みのものを再利用）
+        ebay_specs = ebay_specs_pre
         
         raw_w, raw_d = ebay_specs.get("weight", "不明"), ebay_specs.get("dimensions", "不明")
-        img_url = target_item.get("image_url")
+        # Geminiが選んだ最良画像を使用（なければ先頭画像）
+        img_url = safety_data.get("best_img_url") or all_img_urls[0] if all_img_urls else target_item.get("image_url")
 
         # 2. 画像検索
         print("\n[*] Google Vision API / Lens を使用して類似画像を検索中...")
@@ -162,17 +172,8 @@ def main():
         
         scored_candidates = []
         if candidate_pages:
-            jp_pattern = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]')
-            jp_candidates = []
-            
-            # まずはVision APIの結果から日本語候補を抽出
-            for p in candidate_pages:
-                text = (p.get('title', '') + ' ' + p.get('snippet', '')).strip()
-                if jp_pattern.search(text):
-                    jp_candidates.append(p)
-            
-            # 日本語候補を抽出 (すでに行われているはずだが、念のため正規化)
-            scored_candidates = jp_candidates[:5]
+            # Vision API / Lens でドメインフィルター済みなので、そのまま使う
+            scored_candidates = candidate_pages[:5]
 
             if not scored_candidates:
                 print("    [!] 国内の候補が全く見つかりませんでした。")
@@ -200,16 +201,15 @@ def main():
         
         final_en_name = target_item.get('title') # 初期値
         
-        # 1. VisionAPI (Google Lens) で海外の画像候補を取得
-        en_candidates = search_global_images_by_lens(img_url, browser)
+        # 1. Vision API のみで海外候補を取得（Lens補填なしで高速化）
+        from vision_search import search_global_images_by_lens as _search_global
+        from vision_search import find_similar_images_on_web as _find_similar
+        # Vision APIだけで取得（force_lens=Falseかつmax_results=5で補填なし）
+        en_candidates = _search_global(img_url, browser, max_results=5)
         
         if en_candidates:
-            # 司令官の指示により、画像類似判定（DINO/Color）は行わず、取得したタイトル群から直接AIが抽出します
             print(f"    [*] 取得した {len(en_candidates)} 件の海外候補から英語名を抽出中...")
-            # 上位5件程度の候補をAIに渡す
-            top_en_matches = en_candidates[:5]
-            
-            en_name_data = extract_english_product_name(target_item.get('title'), top_en_matches)
+            en_name_data = extract_english_product_name(target_item.get('title'), en_candidates[:5])
             final_en_name = en_name_data.get("full_name", target_item.get('title'))
         else:
             print("    [!] 海外候補が取得できませんでした。元のタイトルを使用します。")
@@ -230,8 +230,9 @@ def main():
 
         if final_name and final_name != "特定不能":
             # 検索用クエリの作成 (ブランド + 型番) を優先
-            brand_model = f"{name_data.get('brand', '')} {name_data.get('model', '')}".strip()
-            search_query = brand_model if len(brand_model) > 5 else final_name
+            # brand はLLMが誤変換することがあるため series+model+keywords を使う
+            series_model = f"{name_data.get('series', '')} {name_data.get('model', '')} {name_data.get('keywords', '')}".strip().replace('  ', ' ')
+            search_query = series_model if len(series_model) > 5 else final_name
             
             # 共通のフィルタリング用キーワード
             filter_text = f"{name_data.get('series', '')} {name_data.get('model', '')} {name_data.get('keywords', '')}".strip()
@@ -378,8 +379,9 @@ def main():
             return browser
 
         if final_name and final_name != "特定不能":
-            brand_model = f"{name_data.get('brand', '')} {name_data.get('model', '')}".strip()
-            search_query = brand_model if len(brand_model) > 5 else final_name
+            # brand はLLMが誤変換することがあるため series+model+keywords を使う
+            series_model = f"{name_data.get('series', '')} {name_data.get('model', '')} {name_data.get('keywords', '')}".strip().replace('  ', ' ')
+            search_query = series_model if len(series_model) > 5 else final_name
             
             filter_text = f"{name_data.get('series', '')} {name_data.get('model', '')} {name_data.get('keywords', '')}".strip()
             import unicodedata
@@ -413,12 +415,17 @@ def main():
             s_res = search_surugaya(search_query, browser, max_results=10)
             process_candidates(s_res, "駿河屋")
 
+            # 楽天・Yahoo APIは長いクエリでヒットしにくいのでシリーズ+型番+日本語名に絞る
             from shopping_api import search_rakuten
-            rakuten_items = search_rakuten(search_query)
+            _series = name_data.get('series', '')
+            _model = name_data.get('model', '')
+            _jp_name = final_name.replace(_series, '').replace(_model, '').strip(' ,、')
+            api_query = f"{_series} {_model} {_jp_name}".strip() or search_query
+            rakuten_items = search_rakuten(api_query)
             process_candidates(rakuten_items, "楽天市場")
 
             from shopping_api import search_yahoo
-            yahoo_items = search_yahoo(search_query)
+            yahoo_items = search_yahoo(api_query)
             process_candidates(yahoo_items, "Yahooショッピング")
 
         if weight_final == "不明" and raw_w != "不明": weight_final = truncate_weight(raw_w)
@@ -558,6 +565,8 @@ def main():
             
             
             print("\n[*] 国内最安値が判明したため、eBay全体での競合最安値（US/UK）をチェックします...")
+
+            print("\n[*] 国内最安値が判明したため、eBay全体での競合最安値（US/UK）をチェックします...")
             from validate_ebay_search_v3 import process_market, get_ebay_token
             
             token = get_ebay_token()
@@ -600,49 +609,10 @@ def main():
                 # ミラーリングロジック
                 if us_top3 and not uk_top3:
                     print("[*] UK の結果が空のため、US の結果を UK にミラーリングします。")
-                    uk_top3 = [dict(item) for item in us_top3]  # deepcopyで独立させる
-                    print("[*] ミラーリングしたUK商品の送料をGB向けに取り直します...")
-                    from validate_ebay_search_v3 import get_item_details, get_valid_shipping_cost
-                    from validate_ebay_search_v3 import get_gbp_to_usd_rate
-                    GBP_TO_USD = get_gbp_to_usd_rate(fallback=1.27)
-                    for item in uk_top3:
-                        item_id_str = item.get("itemId", "")
-                        formatted_id = f"v1|{item_id_str}|0" if "|" not in item_id_str else item_id_str
-                        details = get_item_details(token, formatted_id, "EBAY_GB")
-                        if details:
-                            shipping_info = get_valid_shipping_cost(details)
-                            if shipping_info:
-                                ship_val, ship_currency = shipping_info
-                                # GBPで返ってきた場合はUSDに換算
-                                if ship_currency.upper() == "GBP":
-                                    ship_val = round(ship_val * GBP_TO_USD, 2)
-                                    print(f"    [*] GBP→USD換算: £->  ${ship_val:.2f}")
-                                item["shipping"] = ship_val
-                                item["total_usd"] = item["price"] + ship_val
-                                print(f"    [OK] GB送料取り直し: ${ship_val:.2f} -> 合計 ${item['total_usd']:.2f}")
-                            else:
-                                print(f"    [!] GBへの配送不可のためUSの送料をそのまま使用")
-                    uk_top3.sort(key=lambda x: x["total_usd"])
-
+                    uk_top3 = us_top3.copy()
                 elif uk_top3 and not us_top3:
                     print("[*] US の結果が空のため、UK の結果を US にミラーリングします。")
-                    us_top3 = [dict(item) for item in uk_top3]  # deepcopyで独立させる
-                    print("[*] ミラーリングしたUS商品の送料をUS向けに取り直します...")
-                    from validate_ebay_search_v3 import get_item_details, get_valid_shipping_cost
-                    for item in us_top3:
-                        item_id_str = item.get("itemId", "")
-                        formatted_id = f"v1|{item_id_str}|0" if "|" not in item_id_str else item_id_str
-                        details = get_item_details(token, formatted_id, "EBAY_US")
-                        if details:
-                            shipping_info = get_valid_shipping_cost(details)
-                            if shipping_info:
-                                ship_val, _ = shipping_info
-                                item["shipping"] = ship_val
-                                item["total_usd"] = item["price"] + ship_val
-                                print(f"    [OK] US送料取り直し: ${ship_val:.2f} -> 合計 ${item['total_usd']:.2f}")
-                            else:
-                                print(f"    [!] USへの配送不可のためUKの送料をそのまま使用")
-                    us_top3.sort(key=lambda x: x["total_usd"])
+                    us_top3 = uk_top3.copy()
 
                 print("\n" + "="*50)
                 print("   🏆 eBay Global 競合最安値 (Top 3)")
@@ -676,22 +646,21 @@ def main():
 
             item_data = {
                 "product_name": final_name,
-                "length": ext_dim(dims_final, 0),   # mm単位 (excel_writer側でcm変換)
-                "width": ext_dim(dims_final, 1),    # mm単位
-                "height": ext_dim(dims_final, 2),   # mm単位
-                "weight": ext_weight(weight_final), # g単位
+                "length": ext_dim(dims_final, 0),
+                "width": ext_dim(dims_final, 1),
+                "height": ext_dim(dims_final, 2),
+                "weight": ext_weight(weight_final),
                 "domestic_price": best_item.get("total_price", 0),
                 "us_top3_prices": [item["total_usd"] for item in us_top3] if 'us_top3' in locals() else [],
                 "uk_top3_prices": [item["total_usd"] for item in uk_top3] if 'uk_top3' in locals() else [],
-                "us_top3_shipping": [item.get("shipping", 0) for item in us_top3] if 'us_top3' in locals() else [],
-                "uk_top3_shipping": [item.get("shipping", 0) for item in uk_top3] if 'uk_top3' in locals() else [],
+                "us_shipping_jpy": locals().get('calculated_us_shipping_jpy', 0),
+                "uk_shipping_jpy": locals().get('calculated_uk_shipping_jpy', 0),
                 "source_url": best_item.get("page_url", ""),
-                "ebay_url": target_item.get("link", ""),
                 "is_high_tariff": high_tariff_flag,
                 "condition": final_ebay_condition
             }
 
-            write_to_excel(item_data)
+            write_to_sheet(item_data)
         else:
             print("\n[!] 国内最安値が見つからなかったため、Excelへの書き込みをスキップします。")
 

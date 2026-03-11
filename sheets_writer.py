@@ -127,7 +127,7 @@ def write_to_sheet(item_data):
     # 為替レート取得（AI2セル）
     try:
         er_val = ws.acell(EXCHANGE_RATE_CELL).value
-        exchange_rate = float(er_val)
+        exchange_rate = float(er_val) - 0.05  # 為替変動バッファ(-0.05円)
         print(f"    [*] 為替レート: {exchange_rate} 円/USD")
     except Exception:
         exchange_rate = 150.0
