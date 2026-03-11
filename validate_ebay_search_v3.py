@@ -335,10 +335,16 @@ def process_market(token, market_id, query, ref_img, condition, model_number="",
     # 自分のeBay商品IDを除外
     if exclude_id:
         judged = [m for m in judged if str(m.get("itemId", "")) != str(exclude_id)]
-    top_matches = [m for m in judged if m.get("score", 0) > 0]
+    MIN_SCORE = 70.0  # eBay競合は70%未満を除外（誤検知防止）
+    top_matches = [m for m in judged if m.get("score", 0) >= MIN_SCORE]
     if not top_matches:
-        print(f"    [-] 画像判定で合格した候補がありませんでした。")
-        return []
+        # 閾値を下げてリトライ（候補が全滅した場合のみ）
+        top_matches = [m for m in judged if m.get("score", 0) > 0]
+        if top_matches:
+            print(f"    [-] 70%以上の候補なし。最高スコア {max(m['score'] for m in top_matches):.1f}% で緩和適用。")
+        else:
+            print(f"    [-] 画像判定で合格した候補がありませんでした。")
+            return []
     
     # 適合率順にソート (スクレイピング側ですでに最安値順に並んでいるが、念のため類似度も加味)
     top_matches.sort(key=lambda x: x["score"], reverse=True)
