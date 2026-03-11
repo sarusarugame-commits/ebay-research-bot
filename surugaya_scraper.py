@@ -36,6 +36,11 @@ def search_surugaya(keyword, browser_page, max_results=10):
             price_tag = item.ele('css:.price') or item.ele('css:.text-price') or item.ele('css:.item_price')
             price_text = price_tag.text.strip() if price_tag else "0"
             
+            # 売切れ商品を除外（sold_outクラス or 「売り切れ」テキスト）
+            item_html = item.html if hasattr(item, 'html') else ""
+            if any(x in item_html.lower() for x in ["sold_out", "soldout", "sold-out", "売り切れ", "在庫なし"]):
+                continue
+
             if item_url:
                 results.append({
                     "title": title, "page_url": item_url, "img_url": img_url,

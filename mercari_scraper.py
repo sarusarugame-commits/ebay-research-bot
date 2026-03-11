@@ -194,6 +194,10 @@ def _fetch_rakuma_via_requests(url):
                 # __NEXT_DATA__ に画像がなければ直接HTMLからも補完
                 if not img_urls:
                     img_urls = re.findall(r'https://[^\s"\']+(?:fril\.jp|r10s\.jp)[^\s"\']+\.(?:jpg|jpeg|png|webp)', r.text)[:5]
+                raw_status = (item.get("status") or "").lower()
+                if raw_status in ("sold_out", "trading", "stop", "suspended"):
+                    print(f"    [SKIP] ラクマ売切れ商品をスキップ (status={raw_status})")
+                    return None
                 cond = (item.get("item_condition") or {}).get("name") or item.get("status") or "不明"
                 print(f"    [requests] ラクマ高速取得成功 (Next.js, {len(img_urls)}枚)")
                 return {
@@ -206,7 +210,27 @@ def _fetch_rakuma_via_requests(url):
 
         # __NEXT_DATA__ でitemが取れなかった場合: HTMLから直接画像URLを抽出
         title_m = re.search(r'<meta property="og:title" content="([^"]+)"', r.text)
-        price_m = re.search(r'([\d,]+)\s*円', r.text)
+
+        # 価格抽出: 優先度順に試す
+        price_str = "0"
+        # ① og:description から「¥1,234」「1,234円」パターン
+        desc_m = re.search(r'<meta property="og:description" content="([^"]+)"', r.text)
+        if desc_m:
+            p = re.search(r'[¥￥]?([\d,]+)\s*円', desc_m.group(1))
+            if p:
+                price_str = p.group(1).replace(",", "")
+        # ② JSON-LD の price フィールド
+        if price_str == "0":
+            ld_m = re.search(r'"price"\s*:\s*"?([\d,]+)"?', r.text)
+            if ld_m:
+                price_str = ld_m.group(1).replace(",", "")
+        # ③ HTML中の1000円以上の最大値（ゴミ値を避けるため下限設定）
+        if price_str == "0":
+            all_prices = [int(p.replace(",", "")) for p in re.findall(r'([\d,]+)\s*円', r.text)
+                          if int(p.replace(",", "")) >= 100]
+            if all_prices:
+                price_str = str(max(all_prices))
+
 
         # CDN画像をHTMLから全件抽出（og:imageだけでなくsrc属性も対象）
         img_urls = list(dict.fromkeys(  # 重複排除・順序保持
@@ -216,14 +240,20 @@ def _fetch_rakuma_via_requests(url):
         if not (title_m and img_urls):
             return None
 
-        print(f"    [requests] ラクマ高速取得成功 (meta, {len(img_urls)}枚)")
+        # HTMLから売切れ判定（meta/og情報ベース）
+        if re.search(r'sold.out|売り切れ|soldout|SOLD OUT', r.text, re.I):
+            print(f"    [SKIP] ラクマ売切れ商品をスキップ (HTML判定)")
+            return None
+
+        print(f"    [requests] ラクマ高速取得成功 (meta, {len(img_urls)}枚) 価格:{price_str}円")
         return {
             "title": title_m.group(1) if title_m else "不明",
-            "price": price_m.group(1).replace(",", "") if price_m else "0",
+            "price": price_str,
             "condition": "不明",
             "img_urls": img_urls,
             "platform": "ラクマ"
         }
+
     except Exception as e:
         print(f"    [requests] ラクマ取得失敗: {e}")
         return None
@@ -429,6 +459,11 @@ def search_rakuma(keyword, browser_page, max_results=10):
         for item in items:
             if len(results) >= max_results:
                 break
+
+            # 売切れ商品をスキップ（CSSクラスまたはSOLDオーバーレイで判定）
+            item_html = item.html if hasattr(item, 'html') else ""
+            if re.search(r'sold.?out|item-box--sold|is-sold|SOLD', item_html, re.I):
+                continue
 
             a_tag = item.ele('tag:a')
             if not a_tag:

@@ -51,6 +51,13 @@ def search_rakuten(keyword):
                         img_urls.append(img_obj["imageUrl"])
                         if len(img_urls) >= 5: break
                 
+                # アフィリエイトURLから実URLを展開（pc=パラメータに本来のURLが入っている）
+                raw_url = item["itemUrl"]
+                import urllib.parse as _up
+                if "afl.rakuten.co.jp" in raw_url:
+                    qs = _up.parse_qs(_up.urlparse(raw_url).query)
+                    raw_url = qs.get("pc", [raw_url])[0]
+
                 results.append({
                     "platform": "楽天市場",
                     "title": item["itemName"],
@@ -58,7 +65,7 @@ def search_rakuten(keyword):
                     "price_int": price,
                     "total_price": total_price,
                     "condition": condition,
-                    "page_url": item["itemUrl"],
+                    "page_url": raw_url,
                     "img_urls": img_urls,
                     "shipping_included": True if ship_flag == 1 else False
                 })
@@ -77,7 +84,7 @@ def search_yahoo(keyword):
         "query": keyword,
         "sort": "+price",
         "results": 5,
-        "in_stock": "true"
+        "in_stock": 1
     }
     
     results = []
@@ -86,6 +93,9 @@ def search_yahoo(keyword):
         data = r.json()
         if "hits" in data:
             for item in data["hits"]:
+                # 在庫なし商品を除外（APIパラメータが効かない場合の二重チェック）
+                if not item.get("inStock", True):
+                    continue
                 price = int(item["price"])
                 # Yahoo API V3 は結果によって code や condition が文字列("free", "used"等)で返ることがある
                 ship_code = str(item.get("shipping", {}).get("code", ""))
