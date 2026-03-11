@@ -460,12 +460,15 @@ def main():
 
         # 5. 【最終補完】スペック情報（重量/サイズ）の補完
         amz_urls_checked = []  # 参照したAmazon URLを収集
+        amz_search_url = None   # Amazon検索URL（取得できなくても表示用に保持）
         if weight_final == "不明" or dims_final == "不明":
             # --- STEP 5.1: Amazon からの補完 ---
             print("\n[*] 重量またはサイズが不明なため、Amazonからスペック情報を補完中...")
             try:
                 browser = get_fresh_browser()
                 amz_search_query = final_name if final_name != "特定不能" else target_item.get('title')
+                import re as _re
+                amz_search_url = f"https://www.amazon.co.jp/s?k={_re.sub(r'[\\s　]+', '+', amz_search_query)}"
                 amz_results = search_amazon(amz_search_query, browser, max_results=5)
                 
                 # 1. Amazon内検索でヒットした場合（画像あり）
@@ -772,6 +775,8 @@ def main():
             print(f"{BLUE}■ Amazon参照URL   :{RESET}")
             for _au in amz_urls_checked:
                 print(f"{BLUE}  - {hyperlink(_au)}{RESET}")
+        elif amz_search_url:
+            print(f"{BLUE}■ Amazon参照URL   : {hyperlink(amz_search_url, '検索結果を開く')} （商品詳細は未取得）{RESET}")
         else:
             print(f"{BLUE}■ Amazon参照URL   : （参照なし）{RESET}")
         print(f"{BLUE}{'='*60}{RESET}")
