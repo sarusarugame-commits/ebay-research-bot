@@ -365,10 +365,16 @@ def process_market(token, market_id, query, ref_img, condition, model_number="",
 
         clean, variant_ng = [], []
         for c in scraped_candidates:
-            # タイトルもハイフンをスペースに正規化して比較
-            title_lower = c.get("title", "").lower().replace("-", " ")
-            # 必須トークンが揃っていない → 完全除外
-            if not all(t in title_lower for t in model_tokens):
+            title_raw = c.get("title", "").lower()
+            # ハイフンをスペースに変換した版と、ハイフンを除去した版の両方で照合
+            title_spaced = title_raw.replace("-", " ")
+            title_nohyphen = title_raw.replace("-", "")
+            # モデルトークンもハイフン除去版を用意
+            model_tokens_nohyphen = [t.replace("-", "") for t in model_tokens]
+            # いずれかの形式で全トークンが含まれていればOK
+            match_spaced = all(t in title_spaced for t in model_tokens)
+            match_nohyphen = all(t in title_nohyphen for t in model_tokens_nohyphen)
+            if not (match_spaced or match_nohyphen):
                 print(f"    [TITLE SKIP] 型番不一致: {c.get('title','')[:50]}")
                 continue
             # 世代違いあり → 隔離
