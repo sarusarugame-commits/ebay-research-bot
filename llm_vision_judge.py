@@ -165,9 +165,9 @@ def analyze_item_safety_and_tariff(ebay_img_url, all_img_urls=None):
 # ─── 画像類似度スコア ─────────────────────────────────────────
 
 def judge_similarity_with_llm(ebay_img_url, scraped_items):
-    results = []
+    from concurrent.futures import ThreadPoolExecutor
     items_to_judge = scraped_items[:5]
-    print(f"\n[*] LLM (Gemini) を用いた画像比較を開始します（合計 {len(items_to_judge)}件）...")
+    print(f"\n[*] LLM (Gemini) を用いた画像比較を開始します（合計 {len(items_to_judge)}件・並列処理）...")
     combined_prompt = (
         "あなたはプロの真贋鑑定士・ECリサーチャーです。以下の指示に従って2つの画像を比較してください。\n\n"
         "【指示】\n"
@@ -180,11 +180,11 @@ def judge_similarity_with_llm(ebay_img_url, scraped_items):
     )
     ebay_b64, ebay_mime = _download_img_b64(ebay_img_url)
 
-    for item in items_to_judge:
-        time.sleep(2)
+    def _judge_one(item):
         mercari_img_url = item.get("img_url")
         if not mercari_img_url:
-            item["score"] = 0; results.append(item); continue
+            item["score"] = 0
+            return item
 
         score = 0
         print(f"  -> 画像比較中: {mercari_img_url[:60]}...")
@@ -214,7 +214,10 @@ def judge_similarity_with_llm(ebay_img_url, scraped_items):
                     score = int(m.group())
 
         item["score"] = score
-        results.append(item)
+        return item
+
+    with ThreadPoolExecutor(max_workers=len(items_to_judge)) as ex:
+        results = list(ex.map(_judge_one, items_to_judge))
 
     results.sort(key=lambda x: x.get("score", 0), reverse=True)
     return results
@@ -232,9 +235,11 @@ def verify_model_match(ref_img_url, candidate_img_url, model_number, condition_t
 {condition_text}
 
 【タスク1: 同一性判定】
-画像1（eBay参照画像）と画像2（国内候補画像）を比較し、これらが「完全に同じ型番・モデル・カラー」であるか判定してください。
-- ロゴの配置、文字盤のデザイン、ベゼルの形状、ボタンの位置、独特な模様などを細部まで確認すること。
-- 色違いや世代違いは "match": false としてください。
+画像1（eBay参照画像）と画像2（候補画像）を比較し、これらが「完全に同じ型番・モデル・カラー」であるか判定してください。
+- 背景、照明、撮影角度、付属品や箱の有無などは無視してください。
+- 本体の形状、テクスチャ、ロゴの配置、文字盤のデザインなど「物理的な製品特徴」が一致しているかを厳格に見てください。
+- 同一製品の別カラーバリエーションや世代違いは "match": false としてください。
+- 【特に重要】型番に「G2」「G3」「Mark II」「第2世代」などの世代識別子が含まれる場合、元の型番と世代違いであれば必ず "match": false にしてください。例：「URSA Mini Pro 4.6K」と「URSA Mini Pro 4.6K G2」は別製品です。
 
 【タスク2: コンディション判定】
 画像2の状態と商品説明テキストから、eBayの出品に最適なコンディションを以下から1つ選んでください。

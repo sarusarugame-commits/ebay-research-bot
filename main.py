@@ -756,6 +756,24 @@ def main():
         _elapsed = datetime.datetime.now() - _start_time
         _m, _s = divmod(int(_elapsed.total_seconds()), 60)
         print(f"{BLUE}[*] 処理時間: {_m}分{_s}秒{RESET}")
+        
+        # Windows トースト通知
+        try:
+            import subprocess
+            _title = "eBayリサーチ完了"
+            _body  = f"{final_name} | {_m}分{_s}秒"
+            subprocess.Popen([
+                "powershell", "-WindowStyle", "Hidden", "-Command",
+                f'[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null;'
+                f'$t = [Windows.UI.Notifications.ToastTemplateType]::ToastText02;'
+                f'$x = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent($t);'
+                f'$x.GetElementsByTagName("text")[0].AppendChild($x.CreateTextNode("{_title}")) | Out-Null;'
+                f'$x.GetElementsByTagName("text")[1].AppendChild($x.CreateTextNode("{_body}")) | Out-Null;'
+                f'[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("eBay Research").Show('
+                f'[Windows.UI.Notifications.ToastNotification]::new($x));'
+            ], creationflags=0x08000000)
+        except Exception:
+            pass
 
     except Exception as e:
         print(f"\n[！重大なエラーが発生しました！]")
