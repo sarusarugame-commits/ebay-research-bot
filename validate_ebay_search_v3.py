@@ -431,7 +431,7 @@ def process_market(token, market_id, query, ref_img, condition, model_number="",
                         or next((u for u in cand.get("img_urls", []) if u), None))
             if not cand_img:
                 return cand, True, ""
-            is_match, condition = verify_model_match(ref_img, cand_img, model_number, condition_text=cand.get("condition", ""), ref_title=ebay_title)
+            is_match, condition = verify_model_match(ref_img, cand_img, model_number, condition_text=cand.get("condition", ""), ref_title=ebay_title, cand_title=cand.get("title", ""))
             return cand, is_match, condition
 
         verified = []

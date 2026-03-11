@@ -225,12 +225,13 @@ def judge_similarity_with_llm(ebay_img_url, scraped_items):
 
 # ─── 型番一致・コンディション判定 ────────────────────────────
 
-def verify_model_match(ref_img_url, candidate_img_url, model_number, condition_text, ref_title=""):
+def verify_model_match(ref_img_url, candidate_img_url, model_number, condition_text, ref_title="", cand_title=""):
     prompt = f"""
 あなたはプロのeBayセラー兼鑑定士です。以下の2枚の画像を比較し、正確な鑑定を行ってください。
 
 【鑑定する型番/モデル】: {model_number}
 【参照商品タイトル（画像1）】: {ref_title if ref_title else "不明"}
+【候補商品タイトル（画像2）】: {cand_title if cand_title else "不明"}
 
 【国内サイトの商品説明テキスト】:
 {condition_text}
