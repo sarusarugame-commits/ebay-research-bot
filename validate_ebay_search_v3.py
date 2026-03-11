@@ -157,7 +157,7 @@ def hybrid_ebay_search(keyword, market_id="EBAY_US", condition="NEW", retry_coun
     params = {
         "_nkw": keyword,
         "LH_ItemCondition": cond_code,
-        "_sop": 15, # price + shipping lowest first
+        "_sop": 12, # Best Match (関連度優先)
         "rt": "nc"
     }
     
