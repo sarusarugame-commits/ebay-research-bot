@@ -1,11 +1,15 @@
 import gpu_utils
 import sys
-BLUE  = "\033[94m"
-RESET = "\033[0m"
-
 import io
 import re
 import datetime
+import os as _os
+# WindowsでANSIエスケープを有効化
+if sys.platform == "win32":
+    _os.system("")
+BLUE  = "\033[94m"
+RESET = "\033[0m"
+
 import traceback
 import functools
 import os
@@ -530,7 +534,12 @@ def main():
 
             best_item = None
             for cand in sorted_candidates:
-                cand_img = cand.get("img_urls", [None])[0] or cand.get("img_url")
+                # ロゴ・バナー系URLを除外して最初の商品画像を取得
+                _logo_patterns = ["static", "logo", "banner", "icon", "badge", "avatar", "profile"]
+                _raw_imgs = cand.get("img_urls") or ([cand.get("img_url")] if cand.get("img_url") else [])
+                _filtered = [u for u in _raw_imgs if u and not any(p in u.lower() for p in _logo_patterns)]
+                cand_img = (_filtered or _raw_imgs or [None])[0]
+
 
                 if not cand_img:
                     print(f"    [LLM] 画像URLなし → 通過扱い: {cand.get('title','')[:30]}")
