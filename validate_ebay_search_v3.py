@@ -340,12 +340,15 @@ def process_market(token, market_id, query, ref_img, condition, model_number="",
             r'\b(G\d+|Mark\s*[IVX]+|MK\s*[23456]|MK\s*[IVX]+|Ver\.?\s*\d+|第\d+世代|Gen\.?\s*\d+)\b',
             _re.IGNORECASE
         )
-        model_tokens = [t for t in model_number.lower().split() if len(t) >= 2]
+        # ハイフン・スペース両方に対応するため、正規化してからトークン分割
+        _model_norm = model_number.lower().replace("-", " ")
+        model_tokens = [t for t in _model_norm.split() if len(t) >= 2]
         allowed_variants = set(v.lower() for v in VARIANT_PATTERN.findall(model_number))
 
         clean, variant_ng = [], []
         for c in scraped_candidates:
-            title_lower = c.get("title", "").lower()
+            # タイトルもハイフンをスペースに正規化して比較
+            title_lower = c.get("title", "").lower().replace("-", " ")
             # 必須トークンが揃っていない → 完全除外
             if not all(t in title_lower for t in model_tokens):
                 print(f"    [TITLE SKIP] 型番不一致: {c.get('title','')[:50]}")
