@@ -16,20 +16,20 @@ from clip_judge_client import judge_similarity
 import threading as _threading
 _judge_lock = _threading.Lock()
 
-def _judge_similarity_safe(ref_img, candidates, max_retries=3, retry_delay=5):
+def _judge_similarity_safe(ref_img, candidates, base_thresholds=None, max_retries=3, retry_delay=5):
     """並列スレッド間のmodel_server競合を防ぐシリアライズラッパー（タイムアウト時リトライ付き）"""
     import time as _time
     for attempt in range(1, max_retries + 1):
         try:
             with _judge_lock:
-                return judge_similarity(ref_img, candidates)
+                return judge_similarity(ref_img, candidates, base_thresholds)
         except Exception as e:
             if attempt < max_retries:
                 print(f"    [!] judge_similarity 失敗 (試行{attempt}/{max_retries}): {e} -> {retry_delay}秒後にリトライ...")
                 _time.sleep(retry_delay)
             else:
                 print(f"    [!] judge_similarity 全試行失敗: {e} -> 空リストで続行")
-                return []
+                return [], {}
 
 from llm_vision_judge import verify_model_match
 
@@ -319,12 +319,15 @@ def get_item_details(token, item_id, marketplace_id):
         print(f"      [!] get_item_details API Error: {e}")
     return None
 
-def process_market(token, market_id, query, ref_img, condition, model_number="", exclude_id=None, ebay_title=""):
+def process_market(token, market_id, keyword, ref_img, condition, exclude_id=None, model_number=None, ebay_title=None, base_thresholds=None):
+    """
+    指定されたマーケット(US/UK)での検索・スクレイピング・画像判定を一貫して行う
+    """
     print(f"\n[*] {market_id} ハイブリッド相場調査を開始します (Condition: {condition})...")
     
     # 1. ハイブリッド検索 (スクレイピング + APIフォールバック)
-    # scraped_candidates = api_ebay_search(query, market_id, condition=condition, token=token) # API専用をコメントアウト
-    scraped_candidates = hybrid_ebay_search(query, market_id, condition=condition)
+    # scraped_candidates = api_ebay_search(keyword, market_id, condition=condition, token=token) # API専用をコメントアウト
+    scraped_candidates = hybrid_ebay_search(keyword, market_id, condition=condition)
     if not scraped_candidates:
         print(f"    [-] {market_id}: 有効な候補が見見つかりませんでした。")
         return []
@@ -427,24 +430,46 @@ def process_market(token, market_id, query, ref_img, condition, model_number="",
                 print(f"    [!] 詳細画像取得失敗 ({item_id}): {e}")
 
     print(f"    [*] {market_id}: {len(scraped_candidates)} 件の候補を画像判定中...")
-    judged = _judge_similarity_safe(ref_img, scraped_candidates)
+    
+    # サーバーに送る形式に変換 (1商品複数画像対応のため、フラットに展開)
+    server_payload = []
+    for idx, cand in enumerate(scraped_candidates):
+        # 複数画像 (img_urls) または単一画像 (img_url) を網羅
+        target_urls = cand.get("img_urls", [])
+        if not target_urls and cand.get("img_url"):
+            target_urls = [cand["img_url"]]
+        
+        for img_url_target in target_urls:
+            server_payload.append({
+                "img_url": img_url_target,
+                "page_url": cand.get("item_url"),
+                "_cand_idx": idx
+            })
 
-    # 相対審査: clip_judge側で score=0 に落とされた物を除外（既に動的閾値適用済み）
-    MIN_SCORE = 70.0  # eBay競合は70%未満を除外（誤検知防止）
-    top_matches = [m for m in judged if m.get("score", 0) >= MIN_SCORE]
+    judged_list, thresholds = _judge_similarity_safe(ref_img, server_payload, base_thresholds)
+
+    # スコアを商品ごとに集約（複数画像のうち最高スコアを採用）
+    top_matches = []
+    for idx, cand in enumerate(scraped_candidates):
+        cand_scores = [float(item.get("score", 0)) for item in judged_list if item.get("_cand_idx") == idx]
+        best_score = max(cand_scores) if cand_scores else 0
+        
+        if best_score > 0:
+            cand["score"] = best_score
+            # 最高スコアの画像URLを特定
+            best_item_ji = next(item for item in judged_list if item.get("_cand_idx") == idx and float(item.get("score", 0)) == best_score)
+            cand["best_img_url"] = best_item_ji.get("img_url")
+            top_matches.append(cand)
+    
     if not top_matches:
-        # 閾値を下げてリトライ（候補が全滅した場合のみ）
-        top_matches = [m for m in judged if m.get("score", 0) > 0]
-        if top_matches:
-            print(f"    [-] 70%以上の候補なし。最高スコア {max(m['score'] for m in top_matches):.1f}% で緩和適用。")
-        elif self_candidate is None:
+        if self_candidate is None:
             print(f"    [-] 画像判定で合格した候補がありませんでした。")
             return []
         else:
             top_matches = []
     
-    # 適合率順にソート (スクレイピング側ですでに最安値順に並んでいるが、念のため類似度も加味)
-    top_matches.sort(key=lambda x: x["score"], reverse=True)
+    # 適合率順にソート
+    top_matches.sort(key=lambda x: x.get("score", 0), reverse=True)
     
     # 3. APIで配送可否と送料を厳密にチェック
     final_candidates = []

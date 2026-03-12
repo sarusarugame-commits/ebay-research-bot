@@ -9,36 +9,42 @@ from bs4 import BeautifulSoup
 _browser_instance = None
 
 def _set_ebay_language(browser):
-    """eBayの言語設定ページで English を選択・保存してUIを英語に固定する"""
+    """eBayのナビバー言語ボタン（地球儀）からEnglishを選択して英語UIに固定する"""
     try:
         tab = browser.latest_tab
-        tab.get("https://www.ebay.com/usr/change/languageandsettings")
+        tab.get("https://www.ebay.com")
         tab.wait(2)
 
-        # 「English」ラジオボタンを探してクリック
-        # eBayの言語設定ページは input[value="en-US"] または label テキストで選択できる
-        en_radio = tab.ele('css:input[value="en-US"]', timeout=5)
-        if en_radio:
-            en_radio.click()
-            tab.wait(0.5)
-        else:
-            # value属性がない場合はラベルテキストで探す
-            en_label = tab.ele('text=English', timeout=3)
-            if en_label:
-                en_label.click()
-                tab.wait(0.5)
-
-        # 保存ボタンをクリック
-        save_btn = (
-            tab.ele('css:button[type="submit"]', timeout=3) or
-            tab.ele('text=Save', timeout=3) or
-            tab.ele('text=保存', timeout=3)
+        # 地球儀アイコン付きの言語ボタンをクリック（「日本語」と表示されているボタン）
+        lang_btn = (
+            tab.ele('css:[data-ebayui-language]', timeout=3) or
+            tab.ele('css:.gh-language', timeout=3) or
+            tab.ele('css:[aria-label*="language"]', timeout=3) or
+            tab.ele('css:.gh-globalnav .language', timeout=3)
         )
-        if save_btn:
-            save_btn.click()
-            tab.wait(2)
+        if lang_btn:
+            lang_btn.click()
+            tab.wait(1)
+        else:
+            # ナビバー内の地球儀アイコン周辺ボタンを全探索
+            btns = tab.eles('css:.gh-nav button')
+            for btn in btns:
+                if '日本語' in (btn.text or '') or 'language' in (btn.get_attr('aria-label') or '').lower():
+                    btn.click()
+                    tab.wait(1)
+                    break
 
-        print("[*] eBay言語を英語に設定しました。", flush=True)
+        # ドロップダウンに出現する「English」をクリック
+        english_option = (
+            tab.ele('text=English', timeout=3) or
+            tab.ele('css:[data-value="en-US"]', timeout=3)
+        )
+        if english_option:
+            english_option.click()
+            tab.wait(2)
+            print("[*] eBay言語を英語に設定しました。", flush=True)
+        else:
+            print("[!] Englishオプションが見つかりませんでした（無視して続行）", flush=True)
     except Exception as e:
         print(f"[!] eBay言語設定失敗（無視して続行）: {e}", flush=True)
 

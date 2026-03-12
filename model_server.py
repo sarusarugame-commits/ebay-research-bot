@@ -147,83 +147,129 @@ def get_masked_color_score(rgba1, rgba2):
     except Exception:
         return 0.0
 
-def judge_similarity(ebay_img_url, scraped_items):
-    """相対審査（パーセンタイル方式）版 judge_similarity
-    - カラーゲート固定閾値を廃止 → 全件DINOまで通す
-    - 全スコア揃った後に上位30%を動的閾値として計算
-    - 下限: DINO=20点, Color=15点（極端な誤検知防止）
+def judge_similarity(ebay_img_url, scraped_items, base_thresholds=None):
+    """一括判定版 judge_similarity
+    - 全候補を先にスコアリング（画像DL、背景除去、DINO Embedding抽出）
+    - 全スコア確定後に、上位30%（70パーセンタイル）を閾値として計算
+    - base_thresholds が指定されている場合（eBay調査時）、それと動的閾値の厳しい方を採用
     """
     print(f"    [SERVER] eBay画像の背景除去中...")
     ebay_rgba = load_and_remove_bg(ebay_img_url)
     if ebay_rgba is None:
-        return []
+        return [], {}
     ebay_rgb  = rgba_to_rgb_white_bg(ebay_rgba)
     ebay_emb  = get_dino_embeddings([ebay_rgb])[0].unsqueeze(0)
 
     results    = []
     batch_size = 5
-    print(f"    [SERVER] {len(scraped_items)} 件を精密判定中...")
+    
+    # ── フェーズ1: 全件スコアリング収集 ──
+    print(f"    [SERVER] {len(scraped_items)} 件の情報収集中...")
+    
+    # 全件分の情報を保持する中間リスト
+    all_scored_items = []
 
     for i in range(0, len(scraped_items), batch_size):
         chunk = scraped_items[i:i + batch_size]
         urls  = [item.get("img_url") or
                  (item.get("img_urls", [None])[0]) for item in chunk]
 
+        # 並列DL・背景除去
         with ThreadPoolExecutor(max_workers=batch_size) as ex:
             rgba_list = list(ex.map(load_and_remove_bg, urls))
 
-        valid = []
+        valid_in_batch = []
         for idx, item in enumerate(chunk):
             cand_rgba = rgba_list[idx]
             if cand_rgba is None:
-                item["score"] = 0; item["color_score"] = 0; results.append(item); continue
+                item["dino_score"] = 0; item["color_score"] = 0
+                all_scored_items.append((item, None, None))
+            else:
+                cand_rgb = rgba_to_rgb_white_bg(cand_rgba)
+                all_scored_items.append((item, cand_rgba, cand_rgb))
+                valid_in_batch.append((item, cand_rgba, cand_rgb))
 
-            color_score = get_masked_color_score(ebay_rgba, cand_rgba)
-            item["color_score"] = color_score
-            # カラーゲート固定閾値廃止: 最低ライン(15点)のみ
-            if color_score < 15:
-                item["score"] = 0; results.append(item); continue
+        if not valid_in_batch:
+            continue
 
-            valid.append((item, rgba_to_rgb_white_bg(cand_rgba)))
+        # カラースコア一括計算
+        def _calc_color(args):
+            _, cand_rgba, _ = args
+            return get_masked_color_score(ebay_rgba, cand_rgba)
 
-        if valid:
-            try:
-                embs = get_dino_embeddings([v[1] for v in valid])
-                for j, (item, _) in enumerate(valid):
-                    sim  = torch.nn.functional.cosine_similarity(
-                               ebay_emb, embs[j].unsqueeze(0)).item()
-                    dino = max(0.0, min(100.0, (sim - 0.4) * 166.6))
-                    item["score"] = dino
-                    item["dino_score"] = dino
-                    results.append(item)
-            except Exception as e:
-                print(f"    [SERVER][!] バッチ推論エラー: {e}")
-                for item, _ in valid:
-                    item["score"] = 0; results.append(item)
+        with ThreadPoolExecutor(max_workers=len(valid_in_batch)) as ex:
+            color_scores = list(ex.map(_calc_color, valid_in_batch))
 
-    # ── 相対審査: 全候補スコアが揃ってから動的閾値を計算 ──
-    import numpy as np
-    dino_scores  = [r.get("dino_score", 0) for r in results if r.get("dino_score", 0) > 0]
-    color_scores = [r.get("color_score", 0) for r in results if r.get("color_score", 0) > 0]
+        for (item, _, __), cs in zip(valid_in_batch, color_scores):
+            item["color_score"] = cs
 
-    dino_thresh  = float(np.percentile(dino_scores,  70)) if dino_scores  else 20.0
-    color_thresh = float(np.percentile(color_scores, 70)) if color_scores else 15.0
+        # DINO Embedding一括抽出
+        try:
+            embs = get_dino_embeddings([v[2] for v in valid_in_batch])
+            for j, (item, _, __) in enumerate(valid_in_batch):
+                sim  = torch.nn.functional.cosine_similarity(
+                           ebay_emb, embs[j].unsqueeze(0)).item()
+                dino = max(0.0, min(100.0, (sim - 0.4) * 166.6))
+                item["dino_score"] = dino
+        except Exception as e:
+            print(f"    [SERVER][!] バッチEmbeddingエラー: {e}")
+            for item, _, __ in valid_in_batch:
+                item["dino_score"] = 0
+
+    # ── フェーズ2: 全件確定後の動的閾値計算 ──
+    # 商品ごと（_cand_idx）にベストスコアを集約し、その代表値で閾値を計算する
+    # → 「1商品5枚」の構造で画像単位の割合計算が狂うのを防ぐ
+    cand_best = {}
+    for item, _, _ in all_scored_items:
+        idx = item.get("_cand_idx")
+        if idx is None:
+            continue
+        d = item.get("dino_score", 0)
+        c = item.get("color_score", 0)
+        if idx not in cand_best or d > cand_best[idx]["dino"]:
+            cand_best[idx] = {"dino": d, "color": c}
+
+    best_dino_scores  = [v["dino"]  for v in cand_best.values() if v["dino"]  > 0]
+    best_color_scores = [v["color"] for v in cand_best.values() if v["color"] > 0]
+
+    # 70パーセンタイルを「割合固定の足切り」ではなく「絶対基準の自動推定」として使う
+    # → 全商品が高品質なら全通過、全商品が低品質なら全不通過が正しく起きる
+    dino_thresh  = float(np.percentile(best_dino_scores,  70)) if best_dino_scores  else 20.0
+    color_thresh = float(np.percentile(best_color_scores, 70)) if best_color_scores else 15.0
+
+    # 絶対下限
     dino_thresh  = max(dino_thresh,  20.0)
     color_thresh = max(color_thresh, 15.0)
-    print(f"    [SERVER][ADAPTIVE] DINO閾値={dino_thresh:.1f}% Color閾値={color_thresh:.1f}%")
 
-    for item in results:
+    # ── フェーズ3: 国内基準の考慮 (eBay調査時) ──
+    if base_thresholds:
+        bt_dino = base_thresholds.get("dino", 0)
+        bt_color = base_thresholds.get("color", 0)
+        print(f"    [SERVER][OVERRIDE] 国内基準参照: D>={bt_dino:.1f} C>={bt_color:.1f}")
+        # 国内基準と現時点の動的閾値の「厳しい方」を採用
+        dino_thresh = max(dino_thresh, bt_dino)
+        color_thresh = max(color_thresh, bt_color)
+
+    print(f"    [SERVER][ADAPTIVE] 最終判定閾値: DINO={dino_thresh:.1f}% Color={color_thresh:.1f}%")
+
+    # ── フェーズ4: 判定と結果の構築 ──
+    for item, _, _ in all_scored_items:
         dino  = item.get("dino_score",  0)
         color = item.get("color_score", 0)
         item_url = item.get("page_url") or item.get("item_url") or "No URL"
+        
         if dino >= dino_thresh and color >= color_thresh:
             print(f"    [SERVER][PASS] Color={color:.1f} DINO={dino:.1f} => {dino:.1f}%  {item_url}")
+            item["score"] = dino
         else:
-            print(f"    [SERVER][REJECT] Color={color:.1f} DINO={dino:.1f} (閾値: D>={dino_thresh:.1f} C>={color_thresh:.1f}) | {item_url}")
+            # リジェクト対象もログには出すが score=0 にする
+            if dino > 0 or color > 0:
+                print(f"    [SERVER][REJECT] Color={color:.1f} DINO={dino:.1f} (閾値: D>={dino_thresh:.1f} C>={color_thresh:.1f}) | {item_url}")
             item["score"] = 0
+        results.append(item)
 
     results.sort(key=lambda x: x.get("score", 0), reverse=True)
-    return results
+    return results, {"dino": dino_thresh, "color": color_thresh}
 
 # ─── ソケット通信ヘルパー ────────────────────────────────────
 def send_msg(sock, data: bytes):
@@ -271,8 +317,13 @@ def handle_client(conn, addr):
         elif cmd == "judge_similarity":
             ebay_url = req["ebay_img_url"]
             items    = req["scraped_items"]
-            result   = judge_similarity(ebay_url, items)
-            send_msg(conn, pickle.dumps({"status": "ok", "result": result}))
+            base_th  = req.get("base_thresholds")
+            result, thresholds = judge_similarity(ebay_url, items, base_th)
+            send_msg(conn, pickle.dumps({
+                "status": "ok",
+                "result": result,
+                "thresholds": thresholds
+            }))
 
         else:
             send_msg(conn, pickle.dumps({"status": "error", "msg": f"unknown cmd: {cmd}"}))

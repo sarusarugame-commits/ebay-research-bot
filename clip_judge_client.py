@@ -102,13 +102,20 @@ def ensure_server(max_wait: int = 120):
     raise RuntimeError(f"model_server が {max_wait}秒 以内に起動しませんでした。")
 
 # ─── 公開API（既存コードの from clip_judge import judge_similarity を置換）──
-def judge_similarity(ebay_img_url: str, scraped_items: list) -> list:
+def judge_similarity(ebay_img_url: str, scraped_items: list, base_thresholds: dict = None) -> (list, dict):
+    """
+    戻り値: (判定済みアイテムリスト, 算出した閾値辞書)
+    """
     ensure_server()
     res = _call({
         "cmd": "judge_similarity",
         "ebay_img_url": ebay_img_url,
         "scraped_items": scraped_items,
+        "base_thresholds": base_thresholds,
     }, timeout=300)
     if res.get("status") != "ok":
         raise RuntimeError(f"サーバーエラー: {res.get('msg')}")
-    return res["result"]
+    
+    # 互換性のため、もし呼び出し元が単一の戻り値を期待している場合は
+    # (result, thresholds) のタプルとして返る。
+    return res["result"], res.get("thresholds", {})
