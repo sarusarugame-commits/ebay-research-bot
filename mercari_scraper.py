@@ -193,7 +193,7 @@ def _fetch_rakuma_via_requests(url):
                         img_urls.append(u)
                 # __NEXT_DATA__ に画像がなければ直接HTMLからも補完
                 if not img_urls:
-                    img_urls = re.findall(r'https://[^\s"\']+(?:fril\.jp|r10s\.jp)[^\s"\']+\.(?:jpg|jpeg|png|webp)', r.text)[:5]
+                    img_urls = re.findall(r'https://[^\s"\'{}<>()]+(?:fril\.jp|r10s\.jp)[^\s"\'{}<>()]+\.(?:jpg|jpeg|png|webp)', r.text)[:5]
                 raw_status = (item.get("status") or "").lower()
                 if raw_status in ("sold_out", "trading", "stop", "suspended"):
                     print(f"    [SKIP] ラクマ売切れ商品をスキップ (status={raw_status})")
@@ -232,9 +232,9 @@ def _fetch_rakuma_via_requests(url):
                 price_str = str(max(all_prices))
 
 
-        # CDN画像をHTMLから全件抽出（og:imageだけでなくsrc属性も対象）
+        # CDN画像をHTMLから全件抽出（不正なURLが混ざらないよう引用符や括弧を排除した厳密なパターン）
         img_urls = list(dict.fromkeys(  # 重複排除・順序保持
-            re.findall(r'https://[^\s"\']+(?:fril\.jp|r10s\.jp)[^\s"\']+\.(?:jpg|jpeg|png|webp)', r.text)
+            re.findall(r'https://[^\s"\'{}<>()]+(?:fril\.jp|r10s\.jp)[^\s"\'{}<>()]+\.(?:jpg|jpeg|png|webp)', r.text)
         ))[:5]
 
         if not (title_m and img_urls):
@@ -291,7 +291,7 @@ def scrape_item_data(url, browser_page):
             for img in browser_page.eles('tag:img', timeout=2):
                 src = img.attr('src')
                 # HTMLエンティティ混入・異常に長いURLを除外
-                if not src or '&quot;' in src or '&amp;' in src or len(src) > 500:
+                if not src or '&quot;' in src or '&amp;' in src or len(src) > 500 or '"' in src or '{' in src or '}' in src or 'asset.fril.jp' in src:
                     continue
                 if any(d in src for d in rakuma_cdn_domains) and src not in img_urls:
                     img_urls.append(src)
@@ -346,7 +346,7 @@ def scrape_item_data(url, browser_page):
             src = img.attr('src')
             if src and src.startswith("http") and src not in img_urls:
                 if "mercdn.net" in src or is_shops:
-                    if "icon" not in src and "logo" not in src:
+                    if "icon" not in src and "logo" not in src and '"' not in src and '{' not in src and '}' not in src:
                         img_urls.append(src)
             if len(img_urls) >= 5:
                 break

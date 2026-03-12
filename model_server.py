@@ -106,8 +106,8 @@ def load_and_remove_bg(url, max_retries=3, retry_delay=2):
     if not url:
         return None
     
-    # HTMLエンティティが混入したゴミURLを除外（スクレイパー側の二重防衛）
-    if '&quot;' in url or '&amp;' in url or len(url) > 500:
+    # UIアセット（ロゴ/アイコン）やパース失敗による不正なURLをダウンロード前に弾く
+    if not url or '"' in url or '{' in url or '}' in url or "asset.fril.jp" in url or len(url) > 500:
         print(f"    [SERVER][Skip] 不正URL除外: {str(url)[:80]}...")
         return None
     
@@ -200,7 +200,7 @@ def judge_similarity(ebay_img_url, scraped_items, base_thresholds=None):
 
         # 並列DL・背景除去（rembgはスレッドセーフでないためDLのみ並列、背景除去は直列）
         def _dl_and_remove(url):
-            if not url:
+            if not url or '"' in url or '{' in url or '}' in url or "asset.fril.jp" in url or len(url) > 500:
                 return None
             # DLのみ並列
             try:
