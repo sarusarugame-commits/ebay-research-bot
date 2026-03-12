@@ -8,8 +8,8 @@ import database
 from PIL import Image
 import io
 
-GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
-QWEN_MODEL   = "qwen/qwen3-5-plus-02-15"
+GEMINI_MODEL = "gemini-2.0-flash-lite-preview-02-05"
+QWEN_MODEL   = "qwen/qwen-3.5-flash"
 
 # ─── 共通ヘルパー ────────────────────────────────────────────
 
@@ -28,313 +28,216 @@ def _gemini_post(parts, timeout=20):
             GEMINI_MODEL, 
             usage.get("promptTokenCount", 0), 
             usage.get("candidatesTokenCount", 0),
-            usage.get("thinkingTokenCount", 0)
+            usage.get("thoughtTokenCount", 0)
         )
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    print(f"    [!] Gemini HTTP {resp.status_code}: {resp.text[:120]}")
-    return None
-
-def _gemini_with_retry(parts, timeout=20, retries=3):
-    for attempt in range(1, retries + 1):
         try:
-            result = _gemini_post(parts, timeout=timeout)
-            if result is not None:
-                if attempt > 1:
-                    print(f"    [*] Gemini リトライ {attempt} 回目で成功")
-                return result
-        except Exception as e:
-            print(f"    [!] Gemini 試行 {attempt}/{retries} 失敗: {e}")
-        if attempt < retries:
-            time.sleep(2)
-    return None
-
-def _qwen_post(messages, timeout=25):
-    if not OPENROUTER_API_KEY:
-        return None
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/eBayResearchSystem",
-        "X-Title": "eBay Research System"
-    }
-    payload = {
-        "model": QWEN_MODEL,
-        "messages": messages,
-        "temperature": 0.0,
-        "thinking": {"type": "disabled"}
-    }
-    try:
-        resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers=headers, json=payload, timeout=timeout
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            usage = data.get("usage", {})
-            database.log_token_usage(
-                QWEN_MODEL, 
-                usage.get("prompt_tokens", 0), 
-                usage.get("completion_tokens", 0),
-                usage.get("reasoning_tokens", 0)
-            )
-            return data["choices"][0]["message"]["content"].strip()
-        print(f"    [!] Qwen HTTP {resp.status_code}: {resp.text[:120]}")
-    except Exception as e:
-        print(f"    [!] Qwen 呼び出し失敗: {e}")
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+        except:
+            return None
     return None
 
 def _download_img_b64(url, max_size=1024):
     try:
         r = requests.get(url, timeout=10)
         if r.status_code == 200:
-            mime = r.headers.get("Content-Type", "image/jpeg").split(";")[0]
             img = Image.open(io.BytesIO(r.content))
-            
-            # リサイズ処理 (長辺を max_size に制限)
             w, h = img.size
             if max(w, h) > max_size:
                 scale = max_size / max(w, h)
-                new_w, new_h = int(w * scale), int(h * scale)
-                img = img.resize((new_w, new_h), Image.LANCZOS)
-                
-                # リサイズされた画像をバイト列に変換
-                buf = io.BytesIO()
-                fmt = "JPEG" if "jpeg" in mime.lower() else "PNG"
-                img.save(buf, format=fmt, quality=85 if fmt == "JPEG" else None)
-                return base64.b64encode(buf.getvalue()).decode("utf-8"), mime
+                img = img.resize((int(w*scale), int(h*scale)), Image.LANCZOS)
             
-            return base64.b64encode(r.content).decode("utf-8"), mime
-    except Exception:
-        pass
-    return None, None
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG")
+            b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+            return f"data:image/jpeg;base64,{b64}"
+    except Exception as e:
+        print(f"    [IMG_ERROR] {e}")
+    return None
 
-def _parse_json(text):
+def _qwen_post_vision(prompt, img_url, timeout=30):
+    img_b64 = _download_img_b64(img_url)
+    if not img_b64: return None
+    
+    payload = {{
+        "model": QWEN_MODEL,
+        "messages": [
+            {{
+                "role": "user",
+                "content": [
+                    {{"type": "text", "text": prompt}},
+                    {{"type": "image_url", "image_url": {{ "url": img_b64 }}}}
+                ]
+            }}
+        ],
+        "response_format": {{ "type": "json_object" }}
+    }}
+    
+    headers = {{
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }}
+    
     try:
-        m = re.search(r'\{.*\}', text, re.DOTALL)
-        return json.loads(m.group()) if m else None
-    except Exception:
-        return None
+        resp = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=timeout)
+        if resp.status_code == 200:
+            data = resp.json()
+            usage = data.get("usage", {{}})
+            database.log_token_usage(QWEN_MODEL, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
+            return data["choices"][0]["message"]["content"]
+    except Exception as e:
+        print(f"    [QWEN_ERROR] {e}")
+    return None
 
+# ─── 個別機能 ───────────────────────────────────────────────
 
-# ─── 重量・サイズ推論 ─────────────────────────────────────────
+def analyze_item_safety_and_tariff(main_img_url, all_img_urls=[]):
+    """
+    主力画像とサブ画像から
+    - アルコール成分の有無
+    - 高関税素材（革、鉄、鋼鉄など）
+    - 特定された素材名
+    - 商品特定に最も適した画像URL
+    を判定する。
+    """
+    print(f"[*] 商品の素材・安全性を解析中 (Qwen 3.5 Flash)...")
+    
+    # 解析対象画像を最大4枚に制限
+    target_imgs = [main_img_url] + [u for u in all_img_urls if u != main_img_url]
+    target_imgs = target_imgs[:4]
+    
+    prompt = """
+Analyze the provided images of this product.
+1. Check if it is an alcoholic beverage (is_alcohol).
+2. Check if it contains high-tariff materials such as 'leather', 'iron', or 'steel' (is_high_tariff).
+3. Identify the primary material (label).
+4. Select the best image index (0-based) for product identification (best_img_idx).
 
-def estimate_weight_with_llm(ebay_img_url, final_name):
-    prompt = (
-        f"あなたはプロの物流・梱包エキスパートです。添付された商品の画像と商品名（{final_name}）を元に、この商品の重量とサイズを推論してください。\n\n"
-        "【推論のステップ】\n"
-        "1. 画像と商品名から商品の材質（金属、プラスチック、木材等）と一般的なサイズ感を特定する。\n"
-        "2. 外寸サイズ（縦x横x高さ mm）を推測する。\n"
-        "3. 推測したサイズと材質から、中身の正味重量（g）を算出する。特に密度（金属は重く、プラスチックは軽い等）を考慮すること。\n"
-        "4. 国際発送用の梱包（ダンボール、緩衝材）を含めた最終的なスペックを出す。梱包材の重さとして +100g、サイズとして 縦+20mm, 横+20mm, 高さ+10mm を加算すること。\n\n"
-        "【出力形式】\n"
-        "必ず以下のJSON形式でのみ出力してください（文章は一切不要です）。\n"
-        "{\"weight\": \"数値g\", \"dimensions\": \"縦x横x高さmm\"}"
-    )
-    print(f"[*] Gemini が画像から重量・サイズを推論しています...")
-    img_b64, mime = _download_img_b64(ebay_img_url)
-    if img_b64:
-        text = _gemini_with_retry([{"text": prompt}, {"inline_data": {"mime_type": mime, "data": img_b64}}])
-        if text:
-            data = _parse_json(text)
-            if data:
-                return {"weight": data.get("weight", "不明"), "dimensions": data.get("dimensions", "不明")}
-
-    print(f"    [*] Gemini失敗 → Qwen ({QWEN_MODEL}) でリトライします...")
-    text = _qwen_post([{"role": "user", "content": [
-        {"type": "text", "text": prompt},
-        {"type": "image_url", "image_url": {"url": ebay_img_url}}
-    ]}])
-    if text:
-        data = _parse_json(text)
-        if data:
-            return {"weight": data.get("weight", "不明"), "dimensions": data.get("dimensions", "不明")}
-    return {"weight": "不明", "dimensions": "不明"}
-
-
-# ─── 安全性・高関税判定 ───────────────────────────────────────
-
-def analyze_item_safety_and_tariff(ebay_img_url, all_img_urls=None):
-    imgs_to_use = (all_img_urls[:5] if all_img_urls else [ebay_img_url])
-    multi_prompt = (
-        "あなたは税関および物流の専門家です。添付された商品の画像（複数枚）を見て、以下を判定してください。\n\n"
-        "1. 【アルコール製品か？】 'true'/'false'\n"
-        "2. 【高関税素材か？】 金属または革が含まれるなら 'true'、そうでなければ 'false'\n"
-        f"3. 【最良画像インデックス】 {len(imgs_to_use)}枚の画像のうち、商品全体が最もよく写っている画像の番号（0始まり）\n\n"
-        "【出力形式】JSONのみ出力（解説不要）\n"
-        '{"is_alcohol": bool, "is_high_tariff": bool, "material_label": "素材名またはnull", "best_img_index": 番号}'
-    )
-    print(f"[*] Gemini が {len(imgs_to_use)} 枚の画像から安全性と最良画像を判定しています...")
-
-    parts = [{"text": multi_prompt}]
-    for url in imgs_to_use:
-        b64, mime = _download_img_b64(url)
+Output JSON:
+{
+  "is_alcohol": bool,
+  "is_high_tariff": bool,
+  "label": "Japanese material name",
+  "best_img_idx": int
+}
+"""
+    # 複数画像を含むQwenリクエスト
+    content_list = [{"type": "text", "text": prompt}]
+    for url in target_imgs:
+        b64 = _download_img_b64(url)
         if b64:
-            parts.append({"inline_data": {"mime_type": mime, "data": b64}})
-    text = _gemini_with_retry(parts)
+            content_list.append({"type": "image_url", "image_url": {"url": b64}})
+            
+    payload = {{
+        "model": QWEN_MODEL,
+        "messages": [{{ "role": "user", "content": content_list }}],
+        "response_format": {{ "type": "json_object" }}
+    }}
+    
+    headers = {{ "Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json" }}
+    
+    try:
+        resp = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=40)
+        if resp.status_code == 200:
+            data = resp.json()
+            res = json.loads(data["choices"][0]["message"]["content"])
+            
+            # 使用トークン記録
+            usage = data.get("usage", {{}})
+            database.log_token_usage(QWEN_MODEL, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
+            
+            idx = res.get("best_img_idx", 0)
+            res["best_img_url"] = target_imgs[idx] if idx < len(target_imgs) else main_img_url
+            return res
+    except:
+        pass
 
-    if not text:
-        print(f"    [*] Gemini失敗 → Qwen ({QWEN_MODEL}) でリトライします...")
-        content = [{"type": "text", "text": multi_prompt}]
-        for url in imgs_to_use:
-            content.append({"type": "image_url", "image_url": {"url": url}})
-        text = _qwen_post([{"role": "user", "content": content}])
+    return {{ "is_alcohol": False, "is_high_tariff": False, "label": "不明", "best_img_url": main_img_url }}
 
-    if text:
-        data = _parse_json(text)
-        if data:
-            best_idx = min(int(data.get("best_img_index", 0)), len(imgs_to_use) - 1)
-            result = {
-                "is_alcohol":     data.get("is_alcohol", False),
-                "is_high_tariff": data.get("is_high_tariff", False),
-                "label":          data.get("material_label", "なし"),
-                "material_label": data.get("material_label", "なし"),
-                "best_img_url":   imgs_to_use[best_idx],
-                "best_img_index": best_idx,
-            }
-            print(f"    [LLM] 安全性・最良画像判定結果: {result}")
-            return result
-    return {"is_alcohol": False, "is_high_tariff": False, "label": "判定エラー"}
-
-
-# ─── 画像類似度スコア ─────────────────────────────────────────
-
-def judge_similarity_with_llm(ebay_img_url, scraped_items):
-    from concurrent.futures import ThreadPoolExecutor
-    items_to_judge = scraped_items[:5]
-    print(f"\n[*] LLM (Gemini) を用いた画像比較を開始します（合計 {len(items_to_judge)}件・並列処理）...")
-    combined_prompt = (
-        "あなたはプロの真贋鑑定士・ECリサーチャーです。以下の指示に従って2つの画像を比較してください。\n\n"
-        "【指示】\n"
-        "2つの商品画像（画像1: eBayの元画像、画像2: Web検索の候補画像）を比較し、これらが「完全に同一の型番・モデルの商品」である確率を、0から100の数値（スコア）で判定してください。\n"
-        "【注意点】\n"
-        "- 背景、照明、撮影角度、付属品や箱の有無などは無視してください。\n"
-        "- 本体の形状、テクスチャ、ロゴの配置、文字盤のデザインなど「物理的な製品特徴」が一致しているかを厳格に見てください。\n"
-        "- 同一製品の別カラーバリエーションは「同一モデル」ではないため、低いスコア（0〜10点）にしてください。\n\n"
-        "出力は必ずスコアの数値（例：85）のみとし、文章や理由は一切含めないでください。"
-    )
-    ebay_b64, ebay_mime = _download_img_b64(ebay_img_url)
-
-    def _judge_one(item):
-        mercari_img_url = item.get("img_url")
-        if not mercari_img_url:
-            item["score"] = 0
-            return item
-
-        score = 0
-        print(f"  -> 画像比較中: {mercari_img_url[:60]}...")
-
-        cand_b64, cand_mime = _download_img_b64(mercari_img_url)
-        if ebay_b64 and cand_b64:
-            text = _gemini_with_retry([
-                {"text": combined_prompt},
-                {"inline_data": {"mime_type": ebay_mime,  "data": ebay_b64}},
-                {"inline_data": {"mime_type": cand_mime, "data": cand_b64}},
-            ])
-            if text:
-                m = re.search(r'\d+', text)
-                if m:
-                    score = int(m.group())
-
-        if score == 0:
-            print(f"    [*] Gemini失敗 → Qwen ({QWEN_MODEL}) でリトライします...")
-            text = _qwen_post([{"role": "user", "content": [
-                {"type": "text", "text": combined_prompt},
-                {"type": "image_url", "image_url": {"url": ebay_img_url}},
-                {"type": "image_url", "image_url": {"url": mercari_img_url}},
-            ]}])
-            if text:
-                m = re.search(r'\d+', text)
-                if m:
-                    score = int(m.group())
-
-        item["score"] = score
-        return item
-
-    with ThreadPoolExecutor(max_workers=len(items_to_judge)) as ex:
-        results = list(ex.map(_judge_one, items_to_judge))
-
-    results.sort(key=lambda x: x.get("score", 0), reverse=True)
-    return results
-
-
-# ─── 型番一致・コンディション判定 ────────────────────────────
-
-def verify_model_match(ref_img_url, candidate_img_url, model_number, condition_text, ref_title="", cand_title=""):
+def estimate_weight_with_llm(img_url, product_name):
+    """
+    画像と商品名から重量とサイズを推定する。
+    """
     prompt = f"""
-あなたはプロのeBayセラー兼鑑定士です。以下の2枚の画像を比較し、正確な鑑定を行ってください。
+Product Name: {product_name}
+Estimate the weight and physical dimensions (Length x Width x Height) of this product based on the image.
+Include units like 'g' or 'kg' for weight, and 'mm' or 'cm' for dimensions.
 
-【鑑定する型番/モデル】: {model_number}
-【参照商品タイトル（画像1）】: {ref_title if ref_title else "不明"}
-【候補商品タイトル（画像2）】: {cand_title if cand_title else "不明"}
-
-【国内サイトの商品説明テキスト】:
-{condition_text}
-
-【タスク1: 同一性判定】
-画像1（eBay参照画像）と画像2（候補画像）を比較し、これらが「完全に同じ型番・モデル・カラー」であるか判定してください。
-- 背景、照明、撮影角度、付属品や箱の有無などは無視してください。
-- 本体の形状、テクスチャ、ロゴの配置、文字盤のデザインなど「物理的な製品特徴」が一致しているかを厳格に見てください。
-- 同一製品の別カラーバリエーションや世代違いは "match": false としてください。
-- 【特に重要】型番に「G2」「G3」「Mark II」「第2世代」などの世代識別子が含まれる場合、元の型番と世代違いであれば必ず "match": false にしてください。例：「URSA Mini Pro 4.6K」と「URSA Mini Pro 4.6K G2」は別製品です。
-- 【仕様差異の判定・必須手順】
-  手順1: 参照商品タイトルから仕様（レンズマウント・カラー・容量・周波数帯など）を抽出する。
-  手順2: 候補商品のタイトルまたは画像から同じ仕様カテゴリを確認する。
-  手順3: 参照に仕様の記載があり、候補の仕様が明確に異なる場合は必ず "match": false にする。
-  例）参照「EFマウント」→ 候補「PLマウント」なら不一致。参照「ブラック」→ 候補「ホワイト」なら不一致。
-  ※候補に仕様の記載がない場合のみ仕様差異を無視してよい。
-
-【タスク2: コンディション判定】
-画像2の状態と商品説明テキストから、eBayの出品に最適なコンディションを以下から1つ選んでください。
-- Brand new (新品・未開封)
-- Like New (未使用に近い)
-- Very Good (目立った傷なし、非常に良い中古)
-- Good (一般的な中古、やや傷あり)
-- Acceptable (かなりの使用感、目立つ傷あり、動作に問題なし)
-- For parts or not working (故障品、パーツ取り)
-
-回答は必ず以下のJSON形式のみで返してください（解説は不要です）。
+Output JSON:
 {{
-    "match": true/false,
-    "condition": "選択したコンディション名",
-    "reason": "判定理由（一致・不一致どちらも必ず記載。仕様差異がある場合は具体的に）"
+  "weight": "estimated weight (e.g. 500g)",
+  "dimensions": "L x W x H (e.g. 200 x 150 x 50 mm)"
 }}
 """
-    print(f"    [LLM] 型番一致・状態判定中: {model_number}...")
+    res_str = _qwen_post_vision(prompt, img_url)
+    if res_str:
+        try:
+            return json.loads(res_str)
+        except:
+            pass
+    return {{ "weight": "不明", "dimensions": "不明" }}
 
-    ref_b64,  ref_mime  = _download_img_b64(ref_img_url)
-    cand_b64, cand_mime = _download_img_b64(candidate_img_url)
-    if ref_b64 and cand_b64:
-        text = _gemini_with_retry([
-            {"text": prompt},
-            {"inline_data": {"mime_type": ref_mime,  "data": ref_b64}},
-            {"inline_data": {"mime_type": cand_mime, "data": cand_b64}},
-        ])
-        if text:
-            data = _parse_json(text)
-            if data:
-                is_match  = bool(data.get("match", False))
-                condition = data.get("condition", "Good")
-                label = "✅ 一致" if is_match else "❌ 不一致"
-                print(f"    [LLM/Gemini] {label} | 判定状態: {condition} | 理由: {data.get('reason','不明')}")
-                print(f"      参照画像: {ref_img_url}")
-                print(f"      候補画像: {candidate_img_url}")
-                return is_match, condition
+def verify_model_match(ebay_img_url, domestic_img_url, model_number, domestic_desc, ref_title="", cand_title=""):
+    """
+    eBayの画像と国内商品の画像/説明/タイトルを比較し、型番が完全に一致しているか判定する。
+    """
+    prefix_prompt = ""
+    if ref_title and cand_title:
+        prefix_prompt = f"Reference Title: {ref_title}\nCandidate Title: {cand_title}\n"
 
-    print(f"    [*] Gemini失敗 → Qwen ({QWEN_MODEL}) でリトライします...")
-    text = _qwen_post([{"role": "user", "content": [
-        {"type": "text", "text": prompt},
-        {"type": "image_url", "image_url": {"url": ref_img_url}},
-        {"type": "image_url", "image_url": {"url": candidate_img_url}},
-    ]}])
-    if text:
-        data = _parse_json(text)
-        if data:
-            is_match  = bool(data.get("match", False))
-            condition = data.get("condition", "Good")
-            label = "✅ 一致" if is_match else "❌ 不一致"
-            print(f"    [LLM/Qwen] {label} | 判定状態: {condition} | 理由: {data.get('reason','不明')}")
-            print(f"      参照画像: {ref_img_url}")
-            print(f"      候補画像: {candidate_img_url}")
-            return is_match, condition
+    prompt = f"""
+Goal: Determine if the TWO products in the images are EXACTLY the same model ({model_number}).
+{prefix_prompt}
+Model Number to Check: {model_number}
+Domestic Product Description: {domestic_desc[:500]}
 
-    return True, "Good"
+Comparison Points:
+1. Does the model number ({model_number}) appear or is it implied to be the same in the domestic product?
+2. Do the colors, shapes, and details in the images match perfectly?
+3. Judge the domestic product's condition (New/Used/Mint/etc.).
+
+Output JSON:
+{{
+  "is_match": bool,
+  "condition": "Condition for eBay (e.g. New, Used, Mint, Good, Acceptable)",
+  "reason": "Short reason in Japanese"
+}}
+"""
+    # 2枚の画像をQwenに投げる
+    b64_ebay = _download_img_b64(ebay_img_url)
+    b64_dom  = _download_img_b64(domestic_img_url)
+    
+    if not b64_ebay or not b64_dom:
+        return False, "Good"
+        
+    payload = {{
+        "model": QWEN_MODEL,
+        "messages": [
+            {{
+                "role": "user",
+                "content": [
+                    {{"type": "text", "text": prompt}},
+                    {{"type": "image_url", "image_url": {{ "url": b64_ebay }}}},
+                    {{"type": "image_url", "image_url": {{ "url": b64_dom }}}}
+                ]
+            }}
+        ],
+        "response_format": {{ "type": "json_object" }}
+    }}
+    
+    headers = {{ "Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json" }}
+    
+    try:
+        resp = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=40)
+        if resp.status_code == 200:
+            data = resp.json()
+            res = json.loads(data["choices"][0]["message"]["content"])
+            
+            usage = data.get("usage", {{}})
+            database.log_token_usage(QWEN_MODEL, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
+            
+            print(f"    [LLM_VERIFY] Match: {res.get('is_match')}, Cond: {res.get('condition')}, Reason: {res.get('reason')}")
+            return res.get("is_match", False), res.get("condition", "Good")
+    except:
+        pass
+        
+    return False, "Good"
