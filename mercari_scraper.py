@@ -290,7 +290,10 @@ def scrape_item_data(url, browser_page):
             rakuma_cdn_domains = ["fril.jp", "rakuten", "r10s.jp", "thumbnail"]
             for img in browser_page.eles('tag:img', timeout=2):
                 src = img.attr('src')
-                if src and any(d in src for d in rakuma_cdn_domains) and src not in img_urls:
+                # HTMLエンティティ混入・異常に長いURLを除外
+                if not src or '&quot;' in src or '&amp;' in src or len(src) > 500:
+                    continue
+                if any(d in src for d in rakuma_cdn_domains) and src not in img_urls:
                     img_urls.append(src)
                 if len(img_urls) >= 5:
                     break

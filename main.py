@@ -105,6 +105,44 @@ def save_debug_image(url, folder, filename):
     except Exception as e:
         print(f"    [DEBUG_IMG_ERROR] {e}")
 
+def print_token_stats():
+    """本日・月間・累計のトークン使用量と円換算コストを表示する"""
+    stats = database.get_token_usage_stats()
+    
+    # 料金設定 ($/1M tokens)
+    IN_PRICE = 0.25
+    OUT_PRICE = 1.50
+    EXCHANGE_RATE = 150.0 # 円/USD
+    
+    def calc_yen(it, ot, tt):
+        # 思考トークン(tt)は出力(ot)の一部として課金
+        total_out = ot + tt
+        usd = (it / 1000000 * IN_PRICE) + (total_out / 1000000 * OUT_PRICE)
+        return usd * EXCHANGE_RATE
+
+    print(f"\n{BLUE}{'='*60}{RESET}")
+    print(f"{BLUE}            📊 LLM トークン使用統計 (推計コスト){RESET}")
+    print(f"{BLUE}{'='*60}{RESET}")
+    
+    labels = [
+        ("今回 (Session)", 'session'),
+        ("今日 (Today)", 'today'),
+        ("今月 (M-T-D)", 'month'),
+        ("全期間 (Total)", 'total')
+    ]
+    
+    for label, key in labels:
+        it, ot, tt = stats[key]
+        it = it or 0
+        ot = ot or 0
+        tt = tt or 0
+        cost = calc_yen(it, ot, tt)
+        color = GREEN if key in ('session', 'today') else BLUE
+        think_str = f" (うち思考:{tt:,})" if tt > 0 else ""
+        print(f"{BLUE}■ {label:14}:{RESET} {color}¥{cost:,.1f}{RESET} (In:{it:,} / Out:{ot:,}{think_str})")
+    
+    print(f"{BLUE}{'='*60}{RESET}\n")
+
 def main():
     print("\n" + "="*50)
     print("   eBay/国内5大ECプラットフォーム 横断リサーチツール")
@@ -209,27 +247,25 @@ def main():
         print(f" -> 最終確定した日本語名: {final_name}")
 
         # ==========================================
-        # 【新規】英語商品名を特定する独立プロセス！ (Vision API版)
+        # 英語商品名・eBay検索クエリの特定
         # ==========================================
-        print("\n[*] VisionAPI(Google Lens)経由で英語商品名（正確な型番）を特定中...")
-        from vision_search import search_global_images_by_lens
-        from llm_namer import extract_english_product_name
-        
-        final_en_name = target_item.get('title') # 初期値
-        
-        # 1. Vision API のみで海外候補を取得（Lens補填なしで高速化）
-        from vision_search import search_global_images_by_lens as _search_global
-        from vision_search import find_similar_images_on_web as _find_similar
-        # Vision APIだけで取得（force_lens=Falseかつmax_results=5で補填なし）
-        en_candidates = _search_global(img_url, browser, max_results=5)
-        
-        if en_candidates:
-            print(f"    [*] 取得した {len(en_candidates)} 件の海外候補から英語名を抽出中...")
-            en_name_data = extract_english_product_name(target_item.get('title'), en_candidates[:5])
-            final_en_name = en_name_data.get("full_name", target_item.get('title'))
-        else:
-            print("    [!] 海外候補が取得できませんでした。元のタイトルを使用します。")
-            
+        # 【旧ロジック: VisionAPI版 - コメントアウト】
+        # print("\n[*] VisionAPI(Google Lens)経由で英語商品名（正確な型番）を特定中...")
+        # from vision_search import search_global_images_by_lens as _search_global
+        # from vision_search import find_similar_images_on_web as _find_similar
+        # en_candidates = _search_global(img_url, browser, max_results=5)
+        # if en_candidates:
+        #     print(f"    [*] 取得した {len(en_candidates)} 件の海外候補から英語名を抽出中...")
+        #     en_name_data = extract_english_product_name(target_item.get('title'), en_candidates[:5])
+        #     final_en_name = en_name_data.get("full_name", target_item.get('title'))
+        # else:
+        #     print("    [!] 海外候補が取得できませんでした。元のタイトルを使用します。")
+        # print(f" -> 最終確定した英語名: {final_en_name}")
+
+        print("\n[*] LLMでeBay検索クエリ（型番）を生成中...")
+        from llm_namer import extract_ebay_search_query
+        en_query_data = extract_ebay_search_query(target_item.get('title'))
+        final_en_name = en_query_data.get("full_name", target_item.get('title'))
         print(f" -> 最終確定した英語名: {final_en_name}")
         # ==========================================
 
@@ -726,6 +762,9 @@ def main():
         _elapsed = datetime.datetime.now() - _start_time
         _m, _s = divmod(int(_elapsed.total_seconds()), 60)
         print(f"{BLUE}[*] 処理時間: {_m}分{_s}秒{RESET}")
+        
+        # トークン統計の表示
+        print_token_stats()
         
         # Windows トースト通知
         try:

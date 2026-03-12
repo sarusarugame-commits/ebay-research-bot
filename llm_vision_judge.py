@@ -4,6 +4,9 @@ import re
 import base64
 import time
 from config import OPENROUTER_API_KEY, GEMINI_API_KEY
+import database
+from PIL import Image
+import io
 
 GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
 QWEN_MODEL   = "qwen/qwen3-5-plus-02-15"
@@ -19,7 +22,15 @@ def _gemini_post(parts, timeout=20):
     )
     resp = requests.post(api_url, json={"contents": [{"parts": parts}]}, timeout=timeout)
     if resp.status_code == 200:
-        return resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        data = resp.json()
+        usage = data.get("usageMetadata", {})
+        database.log_token_usage(
+            GEMINI_MODEL, 
+            usage.get("promptTokenCount", 0), 
+            usage.get("candidatesTokenCount", 0),
+            usage.get("thinkingTokenCount", 0)
+        )
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
     print(f"    [!] Gemini HTTP {resp.status_code}: {resp.text[:120]}")
     return None
 
@@ -58,17 +69,40 @@ def _qwen_post(messages, timeout=25):
             headers=headers, json=payload, timeout=timeout
         )
         if resp.status_code == 200:
-            return resp.json()["choices"][0]["message"]["content"].strip()
+            data = resp.json()
+            usage = data.get("usage", {})
+            database.log_token_usage(
+                QWEN_MODEL, 
+                usage.get("prompt_tokens", 0), 
+                usage.get("completion_tokens", 0),
+                usage.get("reasoning_tokens", 0)
+            )
+            return data["choices"][0]["message"]["content"].strip()
         print(f"    [!] Qwen HTTP {resp.status_code}: {resp.text[:120]}")
     except Exception as e:
         print(f"    [!] Qwen 呼び出し失敗: {e}")
     return None
 
-def _download_img_b64(url):
+def _download_img_b64(url, max_size=1024):
     try:
         r = requests.get(url, timeout=10)
         if r.status_code == 200:
             mime = r.headers.get("Content-Type", "image/jpeg").split(";")[0]
+            img = Image.open(io.BytesIO(r.content))
+            
+            # リサイズ処理 (長辺を max_size に制限)
+            w, h = img.size
+            if max(w, h) > max_size:
+                scale = max_size / max(w, h)
+                new_w, new_h = int(w * scale), int(h * scale)
+                img = img.resize((new_w, new_h), Image.LANCZOS)
+                
+                # リサイズされた画像をバイト列に変換
+                buf = io.BytesIO()
+                fmt = "JPEG" if "jpeg" in mime.lower() else "PNG"
+                img.save(buf, format=fmt, quality=85 if fmt == "JPEG" else None)
+                return base64.b64encode(buf.getvalue()).decode("utf-8"), mime
+            
             return base64.b64encode(r.content).decode("utf-8"), mime
     except Exception:
         pass

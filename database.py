@@ -8,6 +8,9 @@ DB_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'researche
 def get_connection():
     return sqlite3.connect(DB_PATH)
 
+# セッションごとのトークン使用量をメモリ上で保持
+_session_usage = {"input": 0, "output": 0, "thinking": 0}
+
 def setup_db():
     try:
         conn = get_connection()
@@ -38,6 +41,26 @@ def setup_db():
                     c.execute(f"ALTER TABLE items ADD COLUMN {col_name} {col_type}")
                 except:
                     pass
+
+        # トークン使用量記録用テーブル
+        c.execute('''CREATE TABLE IF NOT EXISTS token_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date DATE DEFAULT (date('now', 'localtime')),
+            model TEXT,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
+            timestamp DATETIME DEFAULT (datetime('now', 'localtime'))
+        )''')
+        
+        # token_usage テーブルへの思考トークンカラム追加
+        c.execute("PRAGMA table_info(token_usage)")
+        token_usage_cols = [row[1] for row in c.fetchall()]
+        if "thinking_tokens" not in token_usage_cols:
+            print("[*] DB更新: token_usage に thinking_tokens カラムを追加中...")
+            try:
+                c.execute("ALTER TABLE token_usage ADD COLUMN thinking_tokens INTEGER DEFAULT 0")
+            except:
+                pass
         
         conn.commit()
     finally:
@@ -82,5 +105,65 @@ def delete_researched_item(item_id):
     finally:
         if 'conn' in locals() and conn:
             conn.close()
+
+def log_token_usage(model, input_tokens, output_tokens, thinking_tokens=0):
+    """LLMの使用トークン数をDBに記録する"""
+    # セッション統計を更新
+    global _session_usage
+    _session_usage["input"] += (input_tokens or 0)
+    _session_usage["output"] += (output_tokens or 0)
+    _session_usage["thinking"] += (thinking_tokens or 0)
+
+    try:
+        conn = get_connection()
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO token_usage (model, input_tokens, output_tokens, thinking_tokens)
+            VALUES (?, ?, ?, ?)
+        """, (model, input_tokens, output_tokens, thinking_tokens))
+        conn.commit()
+    except Exception as e:
+        print(f"[!] トークンログ保存失敗: {e}")
+    finally:
+        if 'conn' in locals() and conn:
+            conn.close()
+
+def get_token_usage_stats():
+    """本日、今月、累計のトークン使用統計を取得する"""
+    stats = {}
+    try:
+        conn = get_connection()
+        c = conn.cursor()
+        
+        # 今日
+        c.execute("""
+            SELECT SUM(input_tokens), SUM(output_tokens), SUM(thinking_tokens)
+            FROM token_usage 
+            WHERE date = date('now', 'localtime')
+        """)
+        stats['today'] = c.fetchone() or (0, 0, 0)
+        
+        # 今月
+        c.execute("""
+            SELECT SUM(input_tokens), SUM(output_tokens), SUM(thinking_tokens)
+            FROM token_usage 
+            WHERE strftime('%Y-%m', date) = strftime('%Y-%m', 'now', 'localtime')
+        """)
+        stats['month'] = c.fetchone() or (0, 0, 0)
+        
+        # 累計
+        c.execute("SELECT SUM(input_tokens), SUM(output_tokens), SUM(thinking_tokens) FROM token_usage")
+        stats['total'] = c.fetchone() or (0, 0, 0)
+        
+    except Exception as e:
+        print(f"[!] 統計取得失敗: {e}")
+        stats = {'today': (0,0,0), 'month': (0,0,0), 'total': (0,0,0)}
+    finally:
+        if 'conn' in locals() and conn:
+            conn.close()
+            
+    # セッション統計を追加
+    stats['session'] = (_session_usage["input"], _session_usage["output"], _session_usage["thinking"])
+    return stats
 
 setup_db()

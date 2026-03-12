@@ -3,6 +3,10 @@ import unicodedata
 import gspread
 from google.oauth2.service_account import Credentials
 
+# カラー設定
+GREEN = "\033[92m"
+RESET = "\033[0m"
+
 SPREADSHEET_ID = "1pVY19N3zz67yrGgjGaBwCjLMyVYUHDpgphR-uYsH5fs"
 SHEET_NAME = "3月 のコピー"
 SERVICE_ACCOUNT_FILE = r"G:\マイドライブ\Python_code\eBayリサーチ部隊\elated-graph-393507-ee7f2fb26fd1.json"
@@ -111,7 +115,7 @@ def find_min_hj(exchange_rate, cost_jpy, us_shipping_jpy, uk_shipping_jpy,
 
 
 def write_to_sheet(item_data):
-    print("\n[*] Google Sheetsへの書き込み処理を開始します...")
+    print(f"\n{GREEN}[*] Google Sheetsへの書き込み処理を開始します...{RESET}")
 
     # 認証・接続
     try:
@@ -121,7 +125,7 @@ def write_to_sheet(item_data):
         sh = gc.open_by_key(SPREADSHEET_ID)
         # シート名ではなくgidで直接指定（コピー後もズレない）
         ws = sh.get_worksheet_by_id(49505613)
-        print(f"    [*] 接続シート: '{ws.title}' (gid={ws.id})")
+        print(f"{GREEN}    [*] 接続シート: '{ws.title}' (gid={ws.id}){RESET}")
     except Exception as e:
         print(f"    [!] Google Sheets接続失敗: {e}")
         return False
@@ -130,7 +134,7 @@ def write_to_sheet(item_data):
     try:
         er_val = ws.acell(EXCHANGE_RATE_CELL).value
         exchange_rate = float(er_val) - 0.05  # 為替変動バッファ(-0.05円)
-        print(f"    [*] 為替レート: {exchange_rate} 円/USD")
+        print(f"{GREEN}    [*] 為替レート: {exchange_rate} 円/USD{RESET}")
     except Exception:
         exchange_rate = 157.49
         print(f"    [!] 為替レート取得失敗。デフォルト {exchange_rate} 円/USD を使用。")
@@ -152,7 +156,7 @@ def write_to_sheet(item_data):
 
     us_shipping_jpy = calculate_shipping_cost(weight_g, length_cm or 0, width_cm or 0, height_cm or 0, US_SHIPPING_TABLE)
     uk_shipping_jpy = calculate_shipping_cost(weight_g, length_cm or 0, width_cm or 0, height_cm or 0, UK_SHIPPING_TABLE)
-    print(f"    [*] 国際送料試算: US=¥{us_shipping_jpy:,.0f} / UK=¥{uk_shipping_jpy:,.0f}")
+    print(f"{GREEN}    [*] 国際送料試算: US=¥{us_shipping_jpy:,.0f} / UK=¥{uk_shipping_jpy:,.0f}{RESET}")
 
     us_top3 = item_data.get('us_top3_prices', [])
     uk_top3 = item_data.get('uk_top3_prices', [])
@@ -171,7 +175,7 @@ def write_to_sheet(item_data):
     # 利益率試算
     m_us, profit_us = calc_margin_us(h_usd, j_usd, exchange_rate, cost, us_shipping_jpy, is_high_tariff)
     m_uk, profit_uk = calc_margin_uk(h_usd, j_usd, exchange_rate, cost, uk_shipping_jpy)
-    print(f"    [試算] H=${h_usd:.2f} J=${j_usd:.2f} | US利益率: {m_us:.1%} | UK利益率: {m_uk:.1%}")
+    print(f"{GREEN}    [試算] H=${h_usd:.2f} J=${j_usd:.2f} | US利益率: {m_us:.1%} | UK利益率: {m_uk:.1%}{RESET}")
 
     # Top3上限（3件未満は上限なし）
     h_max = max(us_top3) if len(us_top3) >= 3 else float('inf')
@@ -207,16 +211,16 @@ def write_to_sheet(item_data):
 
         m_us, profit_us = calc_margin_us(h_usd, j_usd, exchange_rate, cost, us_shipping_jpy, is_high_tariff)
         m_uk, profit_uk = calc_margin_uk(h_usd, j_usd, exchange_rate, cost, uk_shipping_jpy)
-        print(f"    [ADJUST] H=${h_usd:.2f}(US最低${h_min:.2f}, 上限${h_max:.2f}) J=${j_usd:.2f}(UK最低${j_min:.2f}, 上限${j_max:.2f})")
-        print(f"    [ADJUST] US達成: {'✅' if us_achievable else '❌'} | UK達成: {'✅' if uk_achievable else '❌'}")
-        print(f"    [ADJUST] US利益率: {m_us:.1%} | UK利益率: {m_uk:.1%}")
+        print(f"{GREEN}    [ADJUST] H=${h_usd:.2f}(US最低${h_min:.2f}, 上限${h_max:.2f}) J=${j_usd:.2f}(UK最低${j_min:.2f}, 上限${j_max:.2f}){RESET}")
+        print(f"{GREEN}    [ADJUST] US達成: {'✅' if us_achievable else '❌'} | UK達成: {'✅' if uk_achievable else '❌'}{RESET}")
+        print(f"{GREEN}    [ADJUST] US利益率: {m_us:.1%} | UK利益率: {m_uk:.1%}{RESET}")
 
     if m_us < TARGET_MARGIN and m_uk < TARGET_MARGIN:
         print(f"    [SKIP] US/UKともに利益率{TARGET_MARGIN:.0%}未満。スキップします。")
         return False
 
-    print(f"    [確定] H=${h_usd:.2f} / J=${j_usd:.2f}")
-    print(f"    [確定] US利益率: {m_us:.1%} (¥{profit_us:,.0f}) | UK利益率: {m_uk:.1%} (¥{profit_uk:,.0f})")
+    print(f"{GREEN}    [確定] H=${h_usd:.2f} / J=${j_usd:.2f}{RESET}")
+    print(f"{GREEN}    [確定] US利益率: {m_us:.1%} (¥{profit_us:,.0f}) | UK利益率: {m_uk:.1%} (¥{profit_uk:,.0f}){RESET}")
 
     # 書き込み先探索（B列が空の最初の行）
     b_col = ws.col_values(2)
@@ -285,8 +289,6 @@ def write_to_sheet(item_data):
             }]
         }
         ws.spreadsheet.batch_update(body)
-        GREEN = "\033[92m"
-        RESET = "\033[0m"
         print(f"{GREEN}    [SUCCESS] {target_row} 行目に書き込み＋ドロップダウン設定完了。{RESET}")
         return True
     except Exception as e:

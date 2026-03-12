@@ -24,6 +24,11 @@ HOST = '127.0.0.1'
 PORT = 55823          # 他と被らない適当なポート
 MAGIC = b'DINO'       # 通信の先頭マジックバイト
 
+BLUE  = "\033[94m"
+RED   = "\033[91m"
+GREEN = "\033[92m"
+RESET = "\033[0m"
+
 # ─── モデルロード（起動時1回だけ）────────────────────────────
 print("[SERVER] DINOv2 / isnet-general-use をロード中...")
 import gpu_utils  # noqa
@@ -94,17 +99,33 @@ def make_fallback_rgba(img):
     alpha = np.where(bg_mask, 0, 255).astype(np.uint8)
     return Image.fromarray(np.dstack([arr, alpha]), "RGBA")
 
-def load_and_remove_bg(url):
+def load_and_remove_bg(url, max_retries=3, retry_delay=2):
     if not url:
         return None
-    try:
-        r = requests.get(url, headers={"User-Agent": UA}, stream=True, timeout=10)
-        r.raise_for_status()
-        img = Image.open(BytesIO(r.content)).convert("RGB")
-        rgba = remove(img, session=bg_session) if bg_session else remove(img)
-        return rgba if rgba.mode == "RGBA" else make_fallback_rgba(img)
-    except Exception:
+    
+    # HTMLエンティティが混入したゴミURLを除外（スクレイパー側の二重防衛）
+    if '&quot;' in url or '&amp;' in url or len(url) > 500:
+        print(f"    [SERVER][Skip] 不正URL除外: {str(url)[:80]}...")
         return None
+    
+    # 楽天サムネイルパラメータを除去して元画像URLに変換
+    if 'thumbnail.image.rakuten.co.jp' in url:
+        url = url.split('?')[0]
+
+    import time as _time
+    for attempt in range(1, max_retries + 1):
+        try:
+            r = requests.get(url, headers={"User-Agent": UA}, stream=True, timeout=10)
+            r.raise_for_status()
+            img = Image.open(BytesIO(r.content)).convert("RGB")
+            rgba = remove(img, session=bg_session) if bg_session else remove(img)
+            return rgba if rgba.mode == "RGBA" else make_fallback_rgba(img)
+        except Exception as e:
+            if attempt < max_retries:
+                _time.sleep(retry_delay)
+            else:
+                print(f"    [SERVER][Error] 背景除去 全試行失敗 ({url}): {e}")
+    return None
 
 def rgba_to_rgb_white_bg(rgba):
     bg = Image.new("RGB", rgba.size, (255, 255, 255))
@@ -232,23 +253,20 @@ def judge_similarity(ebay_img_url, scraped_items, base_thresholds=None):
     best_dino_scores  = [v["dino"]  for v in cand_best.values() if v["dino"]  > 0]
     best_color_scores = [v["color"] for v in cand_best.values() if v["color"] > 0]
 
-    # 70パーセンタイルを「割合固定の足切り」ではなく「絶対基準の自動推定」として使う
-    # → 全商品が高品質なら全通過、全商品が低品質なら全不通過が正しく起きる
-    dino_thresh  = float(np.percentile(best_dino_scores,  70)) if best_dino_scores  else 20.0
-    color_thresh = float(np.percentile(best_color_scores, 70)) if best_color_scores else 15.0
+    # 偏差値方式: 平均・標準偏差から閾値を計算し、明らかな外れ値だけを除外する
+    # 偏差値40未満（平均より1σ下）を落とす = 明らかに違う商品だけ除外
+    # 標準偏差が極小（スコアが均一に固まっている）場合は全件通過
+    def deviation_thresh(scores, fallback):
+        if not scores:
+            return fallback
+        arr = np.array(scores)
+        mean, std = arr.mean(), arr.std()
+        if std < 5.0:  # スコアが均一 → 全件通過させる
+            return 0.0
+        return float(mean - 1.0 * std)  # 偏差値40相当
 
-    # 絶対下限
-    dino_thresh  = max(dino_thresh,  20.0)
-    color_thresh = max(color_thresh, 15.0)
-
-    # ── フェーズ3: 国内基準の考慮 (eBay調査時) ──
-    if base_thresholds:
-        bt_dino = base_thresholds.get("dino", 0)
-        bt_color = base_thresholds.get("color", 0)
-        print(f"    [SERVER][OVERRIDE] 国内基準参照: D>={bt_dino:.1f} C>={bt_color:.1f}")
-        # 国内基準と現時点の動的閾値の「厳しい方」を採用
-        dino_thresh = max(dino_thresh, bt_dino)
-        color_thresh = max(color_thresh, bt_color)
+    dino_thresh  = deviation_thresh(best_dino_scores,  20.0)
+    color_thresh = deviation_thresh(best_color_scores, 15.0)
 
     print(f"    [SERVER][ADAPTIVE] 最終判定閾値: DINO={dino_thresh:.1f}% Color={color_thresh:.1f}%")
 
@@ -259,12 +277,12 @@ def judge_similarity(ebay_img_url, scraped_items, base_thresholds=None):
         item_url = item.get("page_url") or item.get("item_url") or "No URL"
         
         if dino >= dino_thresh and color >= color_thresh:
-            print(f"    [SERVER][PASS] Color={color:.1f} DINO={dino:.1f} => {dino:.1f}%  {item_url}")
+            print(f"    [SERVER]{BLUE}[PASS]{RESET} {GREEN}Color={color:.1f} DINO={dino:.1f} => {dino:.1f}%{RESET}  {item_url}")
             item["score"] = dino
         else:
             # リジェクト対象もログには出すが score=0 にする
             if dino > 0 or color > 0:
-                print(f"    [SERVER][REJECT] Color={color:.1f} DINO={dino:.1f} (閾値: D>={dino_thresh:.1f} C>={color_thresh:.1f}) | {item_url}")
+                print(f"    [SERVER]{RED}[REJECT] Color={color:.1f} DINO={dino:.1f} (閾値: D>={dino_thresh:.1f} C>={color_thresh:.1f}){RESET} | {item_url}")
             item["score"] = 0
         results.append(item)
 
