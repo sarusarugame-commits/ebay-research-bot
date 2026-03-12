@@ -1,334 +1,214 @@
-import re
-import datetime
-import sys
-import io
-import time
 from DrissionPage import ChromiumPage, ChromiumOptions
 from bs4 import BeautifulSoup
+import time
+import re
+import os
+import random
 
-_browser_instance = None
+# ======================================================================
+# ⚙️ 動作モード設定（True/False で切り替え）
+# ======================================================================
+# True  = クライアント仕様: 常に ebay.com(US) を使い、Ship to だけをUS/UKに切り替える（通貨はUSD）
+# False = 本来の仕様: USは ebay.com、UKは ebay.co.uk の現地サイトを使い分ける
+USE_STRICT_CLIENT_MODE = True
+# ======================================================================
 
-def _set_ebay_language(browser):
-    """eBayのナビバー言語ボタン（地球儀）からEnglishを選択して英語UIに固定する"""
+def get_browser_page():
+    """DrissionPageのインスタンスを生成する (共通設定)"""
     try:
-        tab = browser.latest_tab
-        tab.get("https://www.ebay.com")
-        tab.wait(2)
-
-        # 地球儀アイコン付きの言語ボタンをクリック（「日本語」と表示されているボタン）
-        lang_btn = (
-            tab.ele('css:[data-ebayui-language]', timeout=3) or
-            tab.ele('css:.gh-language', timeout=3) or
-            tab.ele('css:[aria-label*="language"]', timeout=3) or
-            tab.ele('css:.gh-globalnav .language', timeout=3)
-        )
-        if lang_btn:
-            lang_btn.click()
-            tab.wait(1)
-        else:
-            # ナビバー内の地球儀アイコン周辺ボタンを全探索
-            btns = tab.eles('css:.gh-nav button')
-            for btn in btns:
-                if '日本語' in (btn.text or '') or 'language' in (btn.get_attr('aria-label') or '').lower():
-                    btn.click()
-                    tab.wait(1)
-                    break
-
-        # ドロップダウンに出現する「English」をクリック
-        english_option = (
-            tab.ele('text=English', timeout=3) or
-            tab.ele('css:[data-value="en-US"]', timeout=3)
-        )
-        if english_option:
-            english_option.click()
-            tab.wait(2)
-            print("[*] eBay言語を英語に設定しました。", flush=True)
-        else:
-            print("[!] Englishオプションが見つかりませんでした（無視して続行）", flush=True)
+        co = ChromiumOptions()
+        # プロファイルパスなどを固定したい場合はここに追加
+        # co.set_user_data_path(r'C:\Users\YourUser\AppData\Local\Google\Chrome\User Data\Default')
+        co.set_argument('--no-sandbox')
+        co.set_argument('--disable-gpu')
+        co.set_argument('--window-size=1280,720')
+        # ヘッドレスモードで使用
+        co.headless(True)
+        
+        page = ChromiumPage(co)
+        return page
     except Exception as e:
-        print(f"[!] eBay言語設定失敗（無視して続行）: {e}", flush=True)
-
+        print(f"[!] ブラウザ起動失敗: {e}")
+        return None
 
 def handle_ebay_popups(tab):
-    """eBay特有のポップアップ（配送先確認など）を処理する。"""
+    """eBay特有のポップアップやGDPR通知を閉じる"""
     try:
-        # 「Where are you shipping to?」 ポップアップ
-        # セレクタは画像に基づき、「Confirm」テキストを持つボタンを優先
-        confirm_button = tab.ele('text=Confirm', timeout=1.5)
-        if confirm_button and confirm_button.is_displayed():
-            print("[*] eBay配送先確認ポップアップを検出。'Confirm'をクリックします。", flush=True)
-            confirm_button.click()
-            tab.wait(1)
+        # GDPR / Cookie 同意ボタン
+        btn_gdpr = tab.ele('#gdpr-banner-accept', timeout=2)
+        if btn_gdpr: btn_gdpr.click()
         
-        # もし「Where are you shipping to?」というテキストがあり、かつ閉じるボタンがあればそれも検討
-        # ただしユーザーの指示は「コンファーム押して」なのでConfirmを優先
+        # ログイン勧誘などのポップアップ (閉じるボタンがあればクリック)
+        btn_close = tab.ele('xpath://button[@aria-label="Close"]', timeout=2)
+        if btn_close: btn_close.click()
     except:
         pass
 
-def get_browser_page():
-    global _browser_instance
-    if _browser_instance:
-        try:
-            _browser_instance.latest_tab
-            return _browser_instance
-        except: _browser_instance = None
-
-    co = ChromiumOptions().set_local_port(9222)
-    co.set_argument('--window-size=1280,720')
-    co.remove_argument('--start-maximized')
-    co.headless(True)
-    co.set_argument('--lang=en-US')
-    co.set_argument('--accept-lang=en-US,en;q=0.9')
-
+def scrape_ebay_newest_items(search_url, page):
+    """
+    指定されたURLから eBay の新着商品をスクレイピングする
+    """
+    print(f"[*] eBayアクセス開始: {search_url}", flush=True)
     try:
-        print("[*] ブラウザ(9222)に接続中...", flush=True)
-        _browser_instance = ChromiumPage(co)
-        _set_ebay_language(_browser_instance)
-        return _browser_instance
-    except Exception as e:
-        print(f"[*] ブラウザ(9222)への接続に失敗しました: {type(e).__name__}: {e}", flush=True)
-        print("[*] 新規ブラウザを起動中...", flush=True)
-        try:
-            co_new = ChromiumOptions()
-            co_new.headless(True)
-            co_new.set_argument('--no-sandbox')
-            co_new.set_argument('--disable-dev-shm-usage')
-            # Windowsの主要なChromeインストール先を順番に探索
-            import os
-            chrome_paths = [
-                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-                os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
-                r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-            ]
-            for path in chrome_paths:
-                if os.path.exists(path):
-                    print(f"[*] ブラウザ検出: {path}", flush=True)
-                    co_new.set_browser_path(path)
-                    break
-            _browser_instance = ChromiumPage(co_new)
-            _set_ebay_language(_browser_instance)
-            return _browser_instance
-        except Exception as e2:
-            print(f"[!] 新規ブラウザの起動に失敗しました: {e2}", flush=True)
-            import traceback
-            traceback.print_exc()
-            return None
-
-def parse_ebay_date(date_str):
-    now = datetime.datetime.now()
-    # 記号の正規化
-    clean_str = date_str.replace('·', ' ').replace(',', ' ').strip()
-    
-    # 月の定義 (12ヶ月分)
-    month_pattern = r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)'
-    # パターン1: Mar 4 20:37
-    m1 = re.search(fr'{month_pattern}\s*[- ]\s*(\d{{1,2}})(\s+(\d{{1,2}}):(\d{{2}}))?', clean_str, re.I)
-    # パターン2: 4 Mar 20:37
-    m2 = re.search(fr'(\d{{1,2}})\s*[- ]\s*{month_pattern}(\s+(\d{{1,2}}):(\d{{2}}))?', clean_str, re.I)
-    
-    month_map = {'jan':1,'feb':2,'mar':3,'apr':4,'may':5,'jun':6,'jul':7,'aug':8,'sep':9,'oct':10,'nov':11,'dec':12}
-    month, day, hour, minute = None, None, 0, 0
-    
-    if m1:
-        month = month_map.get(m1.group(1).lower())
-        day = int(m1.group(2))
-        if m1.group(4): hour = int(m1.group(4))
-        if m1.group(5): minute = int(m1.group(5))
-    elif m2:
-        month = month_map.get(m2.group(2).lower())
-        day = int(m2.group(1))
-        if m2.group(4): hour = int(m2.group(4))
-        if m2.group(5): minute = int(m2.group(5))
+        page.get(search_url)
+        # 読み込み待機 & ポップアップ処理
+        page.wait.load_start()
+        time.sleep(3) # JavaScript描画待ち
+        handle_ebay_popups(page)
         
-    if month and day:
-        try:
-            dt = datetime.datetime(now.year, month, day, hour, minute)
-            # 未来の日付（1日以上先）なら昨年のものと判断
-            if dt > now + datetime.timedelta(days=1):
-                dt = dt.replace(year=now.year - 1)
-            return dt
-        except Exception:
-            return None
-    return None
+        # スクロールして全商品をロード (一部の画像はスクロールしないと現れない)
+        page.scroll.down(2000)
+        time.sleep(2)
+        
+        soup = BeautifulSoup(page.html, 'html.parser')
+        
+        # 商品リストの抽出 (eBay検索結果の共通構造)
+        # s-item クラスが各商品ブロック
+        items = []
+        for s_item in soup.select('.s-item'):
+            # 「Shop on eBay」などのダミー広告枠を除去
+            if "Shop on eBay" in s_item.get_text():
+                continue
+            
+            # ID
+            title_tag = s_item.select_one('.s-item__title')
+            link_tag = s_item.select_one('.s-item__link')
+            
+            if not title_tag or not link_tag:
+                continue
+                
+            title = title_tag.get_text(strip=True)
+            url = link_tag.get('href')
+            
+            # URLから item ID を抽出
+            item_id_match = re.search(r'/itm/(\d+)', url)
+            item_id = item_id_match.group(1) if item_id_match else None
+            
+            if not item_id: continue
+
+            # 価格
+            price_tag = s_item.select_one('.s-item__price')
+            price = price_tag.get_text(strip=True) if price_tag else "N/A"
+            
+            # 画像
+            img_tag = s_item.select_one('.s-item__image-img img')
+            image_url = ""
+            if img_tag:
+                # 属性 src, data-src, src-set などから最適なものを拾う
+                image_url = img_tag.get('data-src') or img_tag.get('src') or ""
+            
+            # 時間（新着順に並んでいる前提だが、念のため「何分前」などを取得したい場合）
+            # time_tag = s_item.select_one('.s-item__time-left, .s-item__listing-date')
+            
+            items.append({
+                'id': item_id,
+                'title': title,
+                'price': price,
+                'url': url,
+                'image_url': image_url,
+                'timestamp': time.time() # 便宜上の取得時刻
+            })
+            
+        print(f" -> {len(items)} 件の商品を抽出しました。", flush=True)
+        return items
+        
+    except Exception as e:
+        print(f"[!] スクレイピング失敗: {e}", flush=True)
+        return []
 
 def scrape_ebay_item_specs(item_id, browser):
     """eBay詳細からスペック抽出"""
     url = f"https://www.ebay.com/itm/{item_id}"
     print(f"[*] eBay詳細読込中: {item_id}...", flush=True)
+    tab = None
     try:
         tab = browser.new_tab(url)
         tab.get(url, timeout=15)
         handle_ebay_popups(tab)
-        print(f"[*] HTML解析中...", flush=True)
-        soup = BeautifulSoup(tab.html, 'html.parser')
-        specs = {"weight": "不明", "dimensions": "不明"}
-        spec_items = soup.find_all('div', class_='ux-labels-values__labels')
-        for label_div in spec_items:
-            label_text = label_div.get_text(strip=True).lower()
-            value_div = label_div.find_next_sibling('div', class_='ux-labels-values__values')
-            if not value_div: continue
-            val = value_div.get_text(strip=True)
-            if "weight" in label_text: specs["weight"] = val
-            elif "dimensions" in label_text or "size" in label_text: specs["dimensions"] = val
         
-        # 複数画像URL取得（最大5枚）
+        # 読み込み待機
+        tab.wait.load_start()
+        time.sleep(2)
+        
+        specs = {"weight": "不明", "dimensions": "不明", "img_urls": []}
+        
+        # スペック表 (Item Specifics) を解析
+        # モバイル・PC版で構造が違う場合があるが、概ね .ux-layout-section--item-specifics
+        soup = BeautifulSoup(tab.html, 'html.parser')
+        
+        spec_text = ""
+        spec_section = soup.select_one('.ux-layout-section--item-specifics, .item-specifics')
+        if spec_section:
+            spec_text += spec_section.get_text(" ", strip=True)
+            
+        # 商品説明 (iframe内) を解析
+        desc_frame = tab.ele('#desc_ifr', timeout=2)
+        if desc_frame:
+            # iframe内に入る
+            try:
+                # iframeの要素を取得して、その中のHTMLをパース
+                desc_html = desc_frame.inner_html
+                desc_soup = BeautifulSoup(desc_html, 'html.parser')
+                spec_text += " " + desc_soup.get_text(" ", strip=True)
+            except:
+                pass
+        
+        # 重力と重量のキーワードで正規表現抽出
+        # Weight: 1.5 kg, Item Weight: 500g など
+        w_match = re.search(r'(?:Weight|Mass|重量)[:：\s]*([\d\.]+\s*(?:kg|g|lb|oz|キロ|グラム))', spec_text, re.I)
+        if w_match: specs["weight"] = w_match.group(1)
+        
+        # 寸法
+        # Dimensions: 10 x 20 x 5 cm など
+        d_match = re.search(r'(?:Dimensions|Size|サイズ|外寸)[:：\s]*([\d\.]+\s*[x*×]\s*[\d\.]+\s*[x*×]\s*[\d\.]+\s*(?:cm|mm|in|センチ|ミリ))', spec_text, re.I)
+        if d_match: specs["dimensions"] = d_match.group(1)
+        
+        # 追加画像URLの抽出
         img_urls = []
-        # パターン1: data-idx属性付きbutton内のimg
-        for btn in soup.select('button[data-idx] img, div.ux-image-carousel-item img'):
-            src = btn.get('data-zoom-src') or btn.get('src') or ''
-            if src and 's-l' in src and src not in img_urls:
-                # サムネイルをフルサイズに変換
-                src = re.sub(r's-l\d+', 's-l500', src)
-                img_urls.append(src)
-            if len(img_urls) >= 5: break
-        # パターン2: JSON内のimageUrl
+        # メイン画像エリアのサムネイルやメイン画像から抽出
+        # ux-image-filmstrip-carousel など
+        for img in soup.select('.ux-image-filmstrip-carousel img, .picture-panel img'):
+            src = img.get('data-src') or img.get('src')
+            if src and "s-l" in src:
+                # 高解像度版に変換 (s-l64, s-l500 など)
+                high_res = re.sub(r's-l\d+', 's-l500', src)
+                if high_res not in img_urls:
+                    img_urls.append(high_res)
+        
+        # 1枚も取れなかった場合はメイン画像だけを確保
         if not img_urls:
-            json_matches = re.findall(r'"imageUrl"\s*:\s*"(https://i\.ebayimg\.com[^"]+)"', tab.html)
-            seen = set()
-            for u in json_matches:
-                u = re.sub(r's-l\d+', 's-l500', u)
-                if u not in seen:
-                    seen.add(u)
-                    img_urls.append(u)
-                if len(img_urls) >= 5: break
+            main_img = soup.select_one('.ux-image-magnifier-view img, #mainImgH0')
+            if main_img:
+                src = main_img.get('src')
+                if src: img_urls.append(re.sub(r's-l\d+', 's-l500', src))
+
+        # 重複除去 & サニタイズ
+        img_urls = [u for u in img_urls if u and u.startswith('http')]
         specs["img_urls"] = img_urls
         
-        tab.close()
         print(f" -> スペック取得完了（画像{len(img_urls)}枚）。", flush=True)
         return specs
     except Exception as e:
         print(f"[!] 詳細パース失敗: {e}", flush=True)
-        return {"weight": "不明", "dimensions": "不明"}
+        return {"weight": "不明", "dimensions": "不明", "img_urls": []}
+    finally:
+        if tab:
+            try: tab.close()
+            except: pass
 
-def scrape_ebay_newest_items(url, browser):
-    import urllib.parse
+def scrape_ebay_seller_items(seller_id, browser):
+    """
+    特定セラーの出品一覧を取得する
+    """
+    url = f"https://www.ebay.com/sch/i.html?_ssn={seller_id}&_sop=10"
+    return scrape_ebay_newest_items(url, browser)
 
-    # URLに配送先強制パラメータを追加
-    parsed_url = urllib.parse.urlparse(url)
-    params = urllib.parse.parse_qs(parsed_url.query)
-    
-    # 既存のリスト形式から単一値に変換して上書き
-    params = {k: v[0] for k, v in params.items()}
-    
-    if "ebay.com" in parsed_url.netloc:
-        params["_fcid"] = "1"      # Country: US
-        params["_stpos"] = "10001" # Zip: New York
-    elif "ebay.co.uk" in parsed_url.netloc:
-        params["_fcid"] = "3"      # Country: UK
-        params["_stpos"] = "E1 6AN" # Zip: London
-        
-    new_query = urllib.parse.urlencode(params)
-    url = urllib.parse.urlunparse(parsed_url._replace(query=new_query))
-    
-    print(f"[*] eBay一覧読込中 (Ship-to強制): {url}", flush=True)
-    scraped_items = []
-    unique_ids = set()
-    max_pages = 5
-    
-    try:
-        tab = browser.latest_tab
-        tab.get(url, timeout=20)
-        handle_ebay_popups(tab)
-        
-        for page_num in range(1, max_pages + 1):
-            print(f"[*] eBay一覧 {page_num}ページ目を解析中...", flush=True)
-            tab.wait(2)
-            tab.scroll.down(1500)
-            tab.wait(1)
-            soup = BeautifulSoup(tab.html, 'html.parser')
-            
-            # =======================================================
-            # 修正: 's-item' クラス依存をやめ、確実な '/itm/' リンクベースで探索
-            # =======================================================
-            itm_links = soup.find_all('a', href=re.compile(r'/itm/'))
-            
-            now = datetime.datetime.now()
-            # 1-15日なら当月1日以降、16-末日なら当月16日以降
-            limit_date = datetime.datetime(now.year, now.month, 1) if now.day <= 15 else datetime.datetime(now.year, now.month, 16)
-            
-            items_on_this_page = 0
-            found_older_item_on_this_page = False
-            
-            for link_tag in itm_links:
-                try:
-                    url = link_tag.get('href', '')
-                    # タイトル付きURLにも対応した正規表現
-                    item_id_match = re.search(r'/itm/(?:.*?/)?(\d{9,})', url)
-                    if not item_id_match: continue
-                    item_id = item_id_match.group(1)
-                    
-                    if item_id in unique_ids: continue
-                    unique_ids.add(item_id)
-                    
-                    # リンクの親要素を遡って、商品ブロック全体（コンテナ）を特定する
-                    container = link_tag
-                    for _ in range(10):
-                        container = container.parent
-                        if not container: break
-                        if container.name == 'li' or (container.name == 'div' and container.get('class') and any('item' in c.lower() for c in container.get('class'))):
-                            break
-                    
-                    if not container: continue
-                    
-                    # 日付の取得: 商品カード全体のテキストから探すとセラー情報などを誤爆するため、
-                    # まずは特定のクラス (listing-date) を探し、なければ全体から探す。
-                    date_tag = container.find(['span', 'div'], class_=re.compile(r'listing-date|location', re.I))
-                    date_text = date_tag.get_text(strip=True) if date_tag else container.get_text(" ", strip=True)
-                    listing_date = parse_ebay_date(date_text)
-                    
-                    # 「New Listing」などの文字があれば現在時刻として扱う
-                    if not listing_date and "new listing" in date_text.lower():
-                        listing_date = now
-
-                    # リミット日より古い商品が見つかったら、このページで終わり
-                    if listing_date and listing_date < limit_date:
-                        print(f"    [DEBUG] 期間外の商品を検出: {listing_date} < {limit_date} (Text: {date_text[:30]}...)")
-                        found_older_item_on_this_page = True
-                        continue
-                        
-                    title_tag = container.find(['h3', 'div', 'span'], class_=re.compile(r'title', re.I))
-                    raw_title = title_tag.get_text(strip=True) if title_tag else "Unknown"
-                    title = re.sub(r'Opens in a new window or tab|Opens in a new window|New Listing', '', raw_title, flags=re.IGNORECASE).strip()
-                    title = re.sub(r'新しいウィンドウまたはタブに表示されます|新しいウィンドウまたはタブで開く|新出品', '', title).strip()
-                    
-                    if "Shop on eBay" in title or not title or len(title) < 5: 
-                        continue
-                    
-                    img_tag = container.find('img')
-                    img_url = ""
-                    if img_tag:
-                        img_url = img_tag.get('data-src') or img_tag.get('src') or ""
-                        if img_url.startswith('data:image') and img_tag.get('data-src'):
-                            img_url = img_tag.get('data-src')
-
-                    scraped_items.append({
-                        "id": item_id, "title": title, "link": url, 
-                        "image_url": img_url,
-                        "timestamp": listing_date if listing_date else now
-                    })
-                    items_on_this_page += 1
-                except: continue
-            
-            print(f"  -> {page_num}ページ目: {items_on_this_page} 件の新規商品を検出しました。", flush=True)
-            
-            # 古い商品が見つかったら終了
-            if found_older_item_on_this_page:
-                print(f"[*] 指定期間外の商品に到達したため、検索を終了します。", flush=True)
-                break
-            
-            # 次のページボタンを探す
-            next_btn = tab.ele('css:a.pagination__next', timeout=2)
-            if next_btn:
-                print(f"[*] 次のページへ遷移します...", flush=True)
-                next_btn.click()
-                tab.wait.load_start()
-            else:
-                print(f"[*] 次のページが見つかりません。検索を終了します。", flush=True)
-                break
-                
-        print(f" -> 合計 {len(scraped_items)} 件の商品を検出しました。", flush=True)
-        return scraped_items
-    except Exception as e:
-        print(f"[!] eBay一覧取得失敗: {e}", flush=True)
-        return scraped_items # 途中でエラーが起きても取れた分は返す
+if __name__ == "__main__":
+    # テスト
+    page = get_browser_page()
+    test_url = "https://www.ebay.com/sch/i.html?_nkw=watch&_sop=10"
+    items = scrape_ebay_newest_items(test_url, page)
+    if items:
+        specs = scrape_ebay_item_specs(items[0]['id'], page)
+        print(specs)
+    page.quit()
