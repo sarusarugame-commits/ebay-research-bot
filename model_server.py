@@ -66,6 +66,9 @@ except Exception as e:
     print(f"[SERVER][Warn] bg_session init error: {e}")
     bg_session = None
 
+import threading
+_rembg_lock = threading.Lock()
+
 dino_tensor_transform = T.Compose([
     T.ToTensor(),
     T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -182,7 +185,7 @@ def judge_similarity(ebay_img_url, scraped_items, base_thresholds=None):
     ebay_emb  = get_dino_embeddings([ebay_rgb])[0].unsqueeze(0)
 
     results    = []
-    batch_size = 5
+    batch_size = 8
     
     # ── フェーズ1: 全件スコアリング収集 ──
     print(f"    [SERVER] {len(scraped_items)} 件の情報収集中...")
@@ -195,9 +198,29 @@ def judge_similarity(ebay_img_url, scraped_items, base_thresholds=None):
         urls  = [item.get("img_url") or
                  (item.get("img_urls", [None])[0]) for item in chunk]
 
-        # 並列DL・背景除去
+        # 並列DL・背景除去（rembgはスレッドセーフでないためDLのみ並列、背景除去は直列）
+        def _dl_and_remove(url):
+            if not url:
+                return None
+            # DLのみ並列
+            try:
+                r = requests.get(url, headers={"User-Agent": UA}, stream=True, timeout=10)
+                r.raise_for_status()
+                img = Image.open(BytesIO(r.content)).convert("RGB")
+            except Exception as e:
+                print(f"    [SERVER][Error] DL失敗 ({str(url)[:80]}): {e}")
+                return None
+            # 背景除去はロックで直列化
+            with _rembg_lock:
+                try:
+                    rgba = remove(img, session=bg_session) if bg_session else remove(img)
+                    return rgba if rgba.mode == "RGBA" else make_fallback_rgba(img)
+                except Exception as e:
+                    print(f"    [SERVER][Error] 背景除去失敗 ({str(url)[:80]}): {e}")
+                    return make_fallback_rgba(img)
+
         with ThreadPoolExecutor(max_workers=batch_size) as ex:
-            rgba_list = list(ex.map(load_and_remove_bg, urls))
+            rgba_list = list(ex.map(_dl_and_remove, urls))
 
         valid_in_batch = []
         for idx, item in enumerate(chunk):
