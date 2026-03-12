@@ -31,9 +31,23 @@ def search_rakuten(keyword):
                 item = item_wrap["Item"]
                 price = item["itemPrice"]
                 ship_flag = item.get("postageFlag", 0)
-                # 勝手な800円加算ロジックを廃止
+                
                 actual_shipping_fee = 0
-                total_price = price
+                if ship_flag != 1:
+                    # 送料無料でない場合、商品ページから実際の送料をスクレイピングして取得
+                    try:
+                        import re
+                        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"}
+                        resp = requests.get(item["itemUrl"], headers=headers, timeout=5)
+                        m = re.search(r'送料\s*([1-9]\d{0,2}(?:,\d{3})*|\d+)\s*円', resp.text)
+                        if m:
+                            actual_shipping_fee = int(m.group(1).replace(',', ''))
+                        else:
+                            actual_shipping_fee = 800  # 抽出失敗時のフォールバック
+                    except:
+                        actual_shipping_fee = 800
+
+                total_price = price + actual_shipping_fee
                 
                 is_used = item.get("usedFlag", 0) == 1
                 item_name = item.get("itemName", "")
@@ -104,9 +118,23 @@ def search_yahoo(keyword):
                 ship_code = str(item.get("shipping", {}).get("code", ""))
                 # "2" または "free" が送料無料（暫定）
                 is_free_shipping = (ship_code == "2" or "free" in ship_code.lower())
-                # 勝手な800円加算ロジックを廃止
+                
                 actual_shipping_fee = 0
-                total_price = price
+                if not is_free_shipping:
+                    # 送料無料でない場合、商品ページから実際の送料をスクレイピングして取得
+                    try:
+                        import re
+                        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"}
+                        resp = requests.get(item["url"], headers=headers, timeout=5)
+                        m = re.search(r'送料\s*([1-9]\d{0,2}(?:,\d{3})*|\d+)\s*円', resp.text)
+                        if m:
+                            actual_shipping_fee = int(m.group(1).replace(',', ''))
+                        else:
+                            actual_shipping_fee = 800  # 抽出失敗時のフォールバック
+                    except:
+                        actual_shipping_fee = 800
+
+                total_price = price + actual_shipping_fee
                 
                 cond_val = str(item.get("condition", "")).lower()
                 # "2" または "used" が中古
