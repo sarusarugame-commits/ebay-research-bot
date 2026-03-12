@@ -8,7 +8,7 @@ import database
 from PIL import Image
 import io
 
-GEMINI_MODEL = "gemini-2.0-flash-lite-preview-02-05"
+GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
 QWEN_MODEL   = "qwen/qwen-3.5-flash"
 
 # ─── 共通ヘルパー ────────────────────────────────────────────
