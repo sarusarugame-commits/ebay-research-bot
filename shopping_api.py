@@ -31,7 +31,9 @@ def search_rakuten(keyword):
                 item = item_wrap["Item"]
                 price = item["itemPrice"]
                 ship_flag = item.get("postageFlag", 0)
-                total_price = price if ship_flag == 1 else (price + 800)
+                # 勝手な800円加算ロジックを廃止
+                actual_shipping_fee = 0
+                total_price = price
                 
                 is_used = item.get("usedFlag", 0) == 1
                 item_name = item.get("itemName", "")
@@ -63,6 +65,7 @@ def search_rakuten(keyword):
                     "title": item["itemName"],
                     "price": str(price),  # main.py用に文字列のpriceを追加
                     "price_int": price,
+                    "actual_shipping_fee": actual_shipping_fee,
                     "total_price": total_price,
                     "condition": condition,
                     "page_url": raw_url,
@@ -101,7 +104,9 @@ def search_yahoo(keyword):
                 ship_code = str(item.get("shipping", {}).get("code", ""))
                 # "2" または "free" が送料無料（暫定）
                 is_free_shipping = (ship_code == "2" or "free" in ship_code.lower())
-                total_price = price if is_free_shipping else (price + 800)
+                # 勝手な800円加算ロジックを廃止
+                actual_shipping_fee = 0
+                total_price = price
                 
                 cond_val = str(item.get("condition", "")).lower()
                 # "2" または "used" が中古
@@ -117,6 +122,7 @@ def search_yahoo(keyword):
                     "title": item["name"],
                     "price": str(price),  # main.py用に文字列のpriceを追加
                     "price_int": price,
+                    "actual_shipping_fee": actual_shipping_fee,
                     "total_price": total_price,
                     "condition": condition,
                     "page_url": item["url"],
