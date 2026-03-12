@@ -44,9 +44,11 @@ def search_rakuten(keyword):
                             actual_shipping_fee = int(m.group(1).replace(',', ''))
                         else:
                             # 抽出失敗時はスキップ
+                            print(f"[search_rakuten] Shipping fee not found, skipping: {item['itemName']}")
                             continue
-                    except:
+                    except Exception as e:
                         # エラー時もスキップ
+                        print(f"[search_rakuten] Error fetching shipping fee, skipping: {e}")
                         continue
 
                 total_price = price + actual_shipping_fee
@@ -79,7 +81,7 @@ def search_rakuten(keyword):
                 results.append({
                     "platform": "楽天市場",
                     "title": item["itemName"],
-                    "price": str(price),  # main.py用に文字列のpriceを追加
+                    "price": str(price),  # main.py用に文字列強引に追加
                     "price_int": price,
                     "actual_shipping_fee": actual_shipping_fee,
                     "total_price": total_price,
@@ -133,9 +135,11 @@ def search_yahoo(keyword):
                             actual_shipping_fee = int(m.group(1).replace(',', ''))
                         else:
                             # 抽出失敗時はスキップ
+                            print(f"[search_yahoo] Shipping fee not found, skipping: {item['name']}")
                             continue
-                    except:
+                    except Exception as e:
                         # エラー時もスキップ
+                        print(f"[search_yahoo] Error fetching shipping fee, skipping: {e}")
                         continue
 
                 total_price = price + actual_shipping_fee
@@ -152,7 +156,7 @@ def search_yahoo(keyword):
                 results.append({
                     "platform": "Yahooショッピング",
                     "title": item["name"],
-                    "price": str(price),  # main.py用に文字列のpriceを追加
+                    "price": str(price),  # main.py用に文字列強引に追加
                     "price_int": price,
                     "actual_shipping_fee": actual_shipping_fee,
                     "total_price": total_price,
