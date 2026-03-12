@@ -46,6 +46,9 @@ from ebay_scraper import get_browser_page, scrape_ebay_item_specs
 # True  = クライアント仕様: 常に ebay.com(US) を使い、Ship to だけをUS/UKに切り替える（通貨はUSD）
 # False = 本来の仕様: USは ebay.com、UKは ebay.co.uk の現地サイトを使い分ける
 USE_STRICT_CLIENT_MODE = True
+
+# 商品IDごとのDINOv2スコア・LLM判定結果キャッシュ（US→UK間で再利用）
+_item_judge_cache = {}  # {item_id: {"score": float, "best_img_url": str, "llm_match": bool}}
 # ======================================================================
 
 def get_ebay_token():
@@ -323,6 +326,7 @@ def process_market(token, market_id, keyword, ref_img, condition, exclude_id=Non
     """
     指定されたマーケット(US/UK)での検索・スクレイピング・画像判定を一貫して行う
     """
+    global _item_judge_cache
     print(f"\n[*] {market_id} ハイブリッド相場調査を開始します (Condition: {condition})...")
     
     # 1. ハイブリッド検索 (スクレイピング + APIフォールバック)
@@ -350,9 +354,10 @@ def process_market(token, market_id, keyword, ref_img, condition, exclude_id=Non
         print(f"    [-] {market_id}: 画像のある候補が1件もありませんでした。")
         return []
 
-    # judge_similarity 用にフォーマット調整
-    for c in scraped_candidates:
+    # judge_similarity 用にフォーマット調整（_cand_idx を付与して商品単位集約を有効化）
+    for i, c in enumerate(scraped_candidates):
         c["img_urls"] = [c["img_url"]]
+        c["_cand_idx"] = i
 
     # 1.5 タイトルフィルター（画像判定前）
     if model_number:
@@ -412,54 +417,88 @@ def process_market(token, market_id, keyword, ref_img, condition, exclude_id=Non
                 remaining.append(c)
         scraped_candidates = remaining
 
-    # 1.9 詳細ページから複数画像取得（特別枠以外の通常候補のみ）
-    browser = get_browser_page()
-    if browser:
-        print(f"    [*] {market_id}: 詳細ページから複数画像を取得中（{len(scraped_candidates)}件）...")
-        for c in scraped_candidates:
-            item_id = c.get("itemId", "")
-            if not item_id:
-                continue
-            try:
-                specs = scrape_ebay_item_specs(item_id, browser)
-                detail_imgs = [u for u in specs.get("img_urls", []) if u]
-                if detail_imgs:
-                    c["img_urls"] = detail_imgs
-                    c["best_img_url"] = detail_imgs[0]
-            except Exception as e:
-                print(f"    [!] 詳細画像取得失敗 ({item_id}): {e}")
+    # キャッシュ済み商品と未処理商品を分離
+    cached_candidates = []
+    uncached_candidates = []
+    for c in scraped_candidates:
+        iid = str(c.get("itemId", ""))
+        if iid in _item_judge_cache:
+            cached = _item_judge_cache[iid]
+            c["score"] = cached["score"]
+            c["best_img_url"] = cached["best_img_url"]
+            cached_candidates.append(c)
+        else:
+            uncached_candidates.append(c)
 
-    print(f"    [*] {market_id}: {len(scraped_candidates)} 件の候補を画像判定中...")
-    
-    # サーバーに送る形式に変換 (1商品複数画像対応のため、フラットに展開)
-    server_payload = []
-    for idx, cand in enumerate(scraped_candidates):
-        # 複数画像 (img_urls) または単一画像 (img_url) を網羅
-        target_urls = cand.get("img_urls", [])
-        if not target_urls and cand.get("img_url"):
-            target_urls = [cand["img_url"]]
-        
-        for img_url_target in target_urls:
-            server_payload.append({
-                "img_url": img_url_target,
-                "page_url": cand.get("item_url"),
-                "_cand_idx": idx
-            })
+    cached_count = len(cached_candidates)
+    if cached_count:
+        print(f"    [*] {market_id}: {cached_count} 件はキャッシュから再利用（詳細画像取得・DINOv2スキップ）。")
 
-    judged_list, thresholds = _judge_similarity_safe(ref_img, server_payload, base_thresholds)
+    # 未処理分のみ詳細画像取得・DINOv2判定を実行
+    if uncached_candidates:
+        browser = get_browser_page()
+        if browser:
+            print(f"    [*] {market_id}: 詳細ページから複数画像を取得中（{len(uncached_candidates)}件）...")
+            for c in uncached_candidates:
+                item_id = c.get("itemId", "")
+                if not item_id:
+                    continue
+                try:
+                    specs = scrape_ebay_item_specs(item_id, browser)
+                    detail_imgs = [u for u in specs.get("img_urls", []) if u]
+                    if detail_imgs:
+                        c["img_urls"] = detail_imgs
+                        c["best_img_url"] = detail_imgs[0]
+                except Exception as e:
+                    print(f"    [!] 詳細画像取得失敗 ({item_id}): {e}")
 
-    # スコアを商品ごとに集約（複数画像のうち最高スコアを採用）
+        print(f"    [*] {market_id}: {len(uncached_candidates)} 件の候補を画像判定中...")
+
+        server_payload = []
+        for idx, cand in enumerate(uncached_candidates):
+            target_urls = cand.get("img_urls", [])
+            if not target_urls and cand.get("img_url"):
+                target_urls = [cand["img_url"]]
+            for img_url_target in target_urls:
+                server_payload.append({
+                    "img_url": img_url_target,
+                    "page_url": cand.get("item_url"),
+                    "_cand_idx": idx
+                })
+
+        judged_list, thresholds = _judge_similarity_safe(ref_img, server_payload, base_thresholds)
+    else:
+        judged_list, thresholds = ([], {})
+
+    # スコアを商品ごとに集約（未処理分のみ・複数画像のうち最高スコアを採用）
+    LLM_SCORE_THRESHOLD = 60.0
     top_matches = []
-    for idx, cand in enumerate(scraped_candidates):
+
+    # 未処理分: DINOv2結果から集約してキャッシュ保存
+    for idx, cand in enumerate(uncached_candidates):
         cand_scores = [float(item.get("score", 0)) for item in judged_list if item.get("_cand_idx") == idx]
         best_score = max(cand_scores) if cand_scores else 0
-        
+        iid = str(cand.get("itemId", ""))
+
         if best_score > 0:
             cand["score"] = best_score
-            # 最高スコアの画像URLを特定
             best_item_ji = next(item for item in judged_list if item.get("_cand_idx") == idx and float(item.get("score", 0)) == best_score)
             cand["best_img_url"] = best_item_ji.get("img_url")
+            # キャッシュ保存
+            _item_judge_cache[iid] = {"score": best_score, "best_img_url": cand["best_img_url"]}
+            
+            if best_score < LLM_SCORE_THRESHOLD:
+                print(f"    [SCORE SKIP] DINOスコア不足({best_score:.1f} < {LLM_SCORE_THRESHOLD}): {cand.get('title','')[:40]}")
+                continue
             top_matches.append(cand)
+
+    # キャッシュ済み分: スコア足切りのみ適用して追加
+    for cand in cached_candidates:
+        best_score = cand.get("score", 0)
+        if best_score < LLM_SCORE_THRESHOLD:
+            print(f"    [SCORE SKIP(cache)] DINOスコア不足({best_score:.1f} < {LLM_SCORE_THRESHOLD}): {cand.get('title','')[:40]}")
+            continue
+        top_matches.append(cand)
     
     if not top_matches:
         if self_candidate is None:
@@ -539,12 +578,26 @@ def process_market(token, market_id, keyword, ref_img, condition, exclude_id=Non
         from concurrent.futures import ThreadPoolExecutor as _TPE
 
         def _verify_one(cand):
+            iid = str(cand.get("itemId", ""))
+            # LLM判定結果もキャッシュ済みなら再利用
+            if iid in _item_judge_cache and "llm_match" in _item_judge_cache[iid]:
+                cached_match = _item_judge_cache[iid]["llm_match"]
+                print(f"    [LLM CACHE] {'✅ 一致' if cached_match else '❌ 不一致'}（キャッシュ再利用）: {cand.get('title','')[:40]}")
+                return cand, cached_match, ""
+            
             cand_img = (cand.get("best_img_url")
                         or next((u for u in cand.get("img_urls", []) if u), None))
             if not cand_img:
                 return cand, True, ""
-            is_match, condition = verify_model_match(ref_img, cand_img, model_number, condition_text=cand.get("condition", ""), ref_title=ebay_title, cand_title=cand.get("title", ""))
-            return cand, is_match, condition
+            is_match, condition_val = verify_model_match(ref_img, cand_img, model_number, condition_text=cand.get("condition", ""), ref_title=ebay_title, cand_title=cand.get("title", ""))
+            
+            # LLM判定結果をキャッシュ
+            if iid in _item_judge_cache:
+                _item_judge_cache[iid]["llm_match"] = is_match
+            else:
+                _item_judge_cache[iid] = {"score": cand.get("score", 0), "best_img_url": cand.get("best_img_url", ""), "llm_match": is_match}
+            
+            return cand, is_match, condition_val
 
         verified = []
         with _TPE(max_workers=min(len(final_candidates), 5)) as ex:
