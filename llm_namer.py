@@ -10,7 +10,7 @@ from PIL import Image
 import io
 
 GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
-QWEN_MODEL   = "qwen/qwen-3.5-flash"
+QWEN_MODEL   = "qwen/qwen3.5-flash-02-23"
 
 
 JP_PATTERN = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\uFF00-\uFFEF]')
@@ -204,7 +204,7 @@ def extract_ebay_search_query(ebay_title, scored_candidates=None):
         f"{hint_section}"
         "eBayで同一商品を検索するための最適なクエリをJSONで出力してください。\n\n"
         "ルール:\n"
-        "1. modelには正確な型番を入れる（例: MRG-BF1000R-1AJR）。末尾のJR・JF等の国内サフィックスも必ず含める。\n"
+        "1. modelには正確な型番を入れる（例: MRG-BF1000R-1AJR）。末尾의JR・JF等の国内サフィックスも必ず含める。\n"
         "2. full_nameはeBay検索クエリとして使う文字列。brand + series + model の順で構成。\n"
         "3. 型番が不明な場合はブランド名＋シリーズ名で構成する。\n"
         "4. 出力はJSONのみ: {\"brand\": \"\", \"series\": \"\", \"model\": \"\", \"full_name\": \"\"}"
