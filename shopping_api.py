@@ -43,9 +43,11 @@ def search_rakuten(keyword):
                         if m:
                             actual_shipping_fee = int(m.group(1).replace(',', ''))
                         else:
-                            actual_shipping_fee = 800  # 抽出失敗時のフォールバック
+                            # 抽出失敗時はスキップ
+                            continue
                     except:
-                        actual_shipping_fee = 800
+                        # エラー時もスキップ
+                        continue
 
                 total_price = price + actual_shipping_fee
                 
@@ -130,9 +132,11 @@ def search_yahoo(keyword):
                         if m:
                             actual_shipping_fee = int(m.group(1).replace(',', ''))
                         else:
-                            actual_shipping_fee = 800  # 抽出失敗時のフォールバック
+                            # 抽出失敗時はスキップ
+                            continue
                     except:
-                        actual_shipping_fee = 800
+                        # エラー時もスキップ
+                        continue
 
                 total_price = price + actual_shipping_fee
                 
