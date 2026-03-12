@@ -11,7 +11,7 @@ BLUE  = "\033[94m"
 RESET = "\033[0m"
 
 def hyperlink(url, text=None):
-    \"\"\"OSC 8ハイパーリンク。Windows Terminal / VSCode対応。非対応端末はURLをそのまま表示。\"\"\"
+    """OSC 8ハイパーリンク。Windows Terminal / VSCode対応。非対応端末はURLをそのまま表示。"""
     raw = text if text else url
     label = raw[:30] + "…" if len(raw) > 30 else raw
     return f"\033]8;;{url}\033\\{BLUE}{label}{RESET}\033]8;;\033\\"
@@ -42,7 +42,7 @@ from surugaya_scraper import search_surugaya, scrape_surugaya_item
 from llm_vision_judge import estimate_weight_with_llm, analyze_item_safety_and_tariff
 from clip_judge_client import judge_similarity
 # verify_with_lightglue は clip_judge 内で使われるようになったよ！
-from ebay_scraper import scrape_ebay_newest_items, scrape_ebay_item_specs, get_browser_page
+from ebay_scraper import scrape_ebay_newest_items, scrape_ebay_item_specs, get_browser_page, ChromiumOptions, ChromiumPage
 from vision_search import find_similar_images_on_web
 from llm_namer import extract_product_name
 from shopping_api import search_rakuten, search_yahoo, scrape_yahoo_item
@@ -51,6 +51,14 @@ from llm_vision_judge import verify_model_match
 from sheets_writer import write_to_sheet
 GREEN = "\033[92m"
 RESET_GREEN = "\033[0m"
+
+def get_fresh_browser():
+    """並列処理用に新しいポートでブラウザを起動する"""
+    co = ChromiumOptions()
+    co.auto_port()
+    co.headless(True)
+    co.set_argument('--window-size=1280,720')
+    return ChromiumPage(co)
 
 def extract_specs_from_text(text):
     w, d = "不明", "不明"
@@ -90,7 +98,7 @@ def truncate_weight(weight_str):
     return weight_str
 
 def save_debug_image(url, folder, filename):
-    \"\"\"画像をダウンロードして保存する（デバッグ用）\"\"\"
+    """画像をダウンロードして保存する（デバッグ用）"""
     try:
         if not os.path.exists(folder):
             os.makedirs(folder)
@@ -106,7 +114,7 @@ def save_debug_image(url, folder, filename):
         print(f"    [DEBUG_IMG_ERROR] {e}")
 
 def print_token_stats():
-    \"\"\"本日・月間・累計のトークン使用量と円換算コストを表示する\"\"\"
+    """本日・月間・累計のトークン使用量と円換算コストを表示する"""
     stats = database.get_token_usage_stats()
     
     # 料金設定 ($/1M tokens)
@@ -120,9 +128,9 @@ def print_token_stats():
         usd = (it / 1000000 * IN_PRICE) + (total_out / 1000000 * OUT_PRICE)
         return usd * EXCHANGE_RATE
 
-    print(f\"\n{BLUE}{'='*60}{RESET}\")
-    print(f\"{BLUE}            📊 LLM トークン使用統計 (推計コスト){RESET}\")
-    print(f\"{BLUE}{'='*60}{RESET}\")
+    print(f"\n{BLUE}{'='*60}{RESET}")
+    print(f"{BLUE}            📊 LLM トークン使用統計 (推計コスト){RESET}")
+    print(f"{BLUE}{'='*60}{RESET}")
     
     labels = [
         (\"今回 (Session)\", 'session'),
@@ -283,7 +291,7 @@ def execute_research_session(url, browser):
             model_name = normalize_text(name_data.get('model', ''))
             series_name = normalize_text(name_data.get('series', ''))
 
-            def collect_candidates(candidates, platform):
+            def collect_candidates(candidates, platform, browser_to_use=None):
                 if not candidates:
                     print(f\"[*] {platform}: 検索結果 0 件でした。\")
                     return []
@@ -310,20 +318,19 @@ def execute_research_session(url, browser):
                     for item in candidates: item[\"platform\"] = platform
                     keyword_filtered = candidates
 
-                # browser_page = get_browser_page() # Removed this line as browser is passed in
                 collected = []
+                # 詳細情報の取得には、ブラウザ系の場合は渡された browser_to_use を使用、API系は None
                 for item in keyword_filtered:
                     page_url = item.get('page_url', '')
                     if not page_url or not page_url.startswith(\"http\"): continue
 
-                    # 詳細情報の取得
                     detail = None
                     if platform in [\"メルカリ\", \"ラクマ\"]:
-                        detail = scrape_item_data(page_url, browser)
+                        detail = scrape_item_data(page_url, browser_to_use)
                     elif platform == \"駿河屋\":
-                        detail = scrape_surugaya_item(page_url, browser)
+                        detail = scrape_surugaya_item(page_url, browser_to_use)
                     elif platform == \"Yahooショッピング\":
-                        detail = scrape_yahoo_item(page_url, browser)
+                        detail = scrape_yahoo_item(page_url, browser_to_use)
                     
                     if detail: item.update(detail)
                     
@@ -336,25 +343,52 @@ def execute_research_session(url, browser):
                         collected.append(item)
                 return collected
 
-            print(f\"\n[*] 国内5大プラットフォームを順次調査中（収集フェーズ）...\")
-            
-            # 各プラットフォームから収集
-            m_res = search_mercari(search_query, browser, max_results=15)
-            all_domestic_candidates.extend(collect_candidates(m_res, \"メルカリ\"))
+            print(f\"\n[*] 国内5大プラットフォームを並列調査中（収集フェーズ）...\")
 
-            r_res = search_rakuma(search_query, browser, max_results=10)
-            all_domestic_candidates.extend(collect_candidates(r_res, \"ラクマ\"))
-
-            s_res = search_surugaya(search_query, browser, max_results=10)
-            all_domestic_candidates.extend(collect_candidates(s_res, \"駿河屋\"))
-
+            from concurrent.futures import ThreadPoolExecutor, as_completed
             _series = name_data.get('series', '')
-            _model = name_data.get('model', '')
+            _model  = name_data.get('model', '')
             _jp_name = final_name.replace(_series, '').replace(_model, '').strip(' ,、')
             api_query = f\"{_series} {_model} {_jp_name}\".strip() or search_query
-            
-            all_domestic_candidates.extend(collect_candidates(search_rakuten(api_query), \"楽天市場\"))
-            all_domestic_candidates.extend(collect_candidates(search_yahoo(api_query), \"Yahooショッピング\"))
+
+            # ブラウザ系（BAN対策で3並列上限）
+            browser_tasks = [
+                (\"メルカリ\",       lambda b: (search_mercari(search_query, b, max_results=15), b)),
+                (\"ラクマ\",         lambda b: (search_rakuma(search_query,  b, max_results=10), b)),
+                (\"駿河屋\",         lambda b: (search_surugaya(search_query, b, max_results=10), b)),
+            ]
+            # API系（制限緩め、2並列）
+            api_tasks = [
+                (\"楽天市場\",         lambda: (search_rakuten(api_query), None)),
+                (\"Yahooショッピング\", lambda: (search_yahoo(api_query), None)),
+            ]
+
+            def _run_task(task_spec):
+                name, fn = task_spec
+                try:
+                    if name in [\"メルカリ\", \"ラクマ\", \"駿河屋\"]:
+                        b = get_fresh_browser()
+                        res, _ = fn(b)
+                        return name, res, b
+                    else:
+                        res, _ = fn()
+                        return name, res, None
+                except Exception as e:
+                    print(f\"    [!] {name} 収集エラー: {e}\")
+                    return name, [], None
+
+            # ブラウザ3並列 + API2並列 を同時実行
+            all_futures = {}
+            with ThreadPoolExecutor(max_workers=5) as ex:
+                for t in browser_tasks + api_tasks:
+                    all_futures[ex.submit(_run_task, t)] = t[0]
+                for future in as_completed(all_futures):
+                    name, res, b_used = future.result()
+                    print(f\"[*] {name}: {len(res)} 件の候補を収集中...\")
+                    all_domestic_candidates.extend(collect_candidates(res, name, b_used))
+                    if b_used:
+                        try: b_used.quit()
+                        except: pass
 
             # ── 国内一括判定フェーズ ──
             if all_domestic_candidates:
@@ -419,11 +453,12 @@ def execute_research_session(url, browser):
             # --- STEP 5.1: Amazon からの補完 ---
             print(\"\n[*] 重量またはサイズが不明なため、Amazonからスペック情報を補完中...\")
             try:
-                browser = get_fresh_browser()
+                # Amazon 検索用のブラウザ
+                browser_amz = get_fresh_browser()
                 amz_search_query = final_name if final_name != \"特定不能\" else target_item.get('title')
                 import re as _re
                 amz_search_url = f\"https://www.amazon.co.jp/s?k={_re.sub(r'[\\s　]+', '+', amz_search_query)}\"
-                amz_results = search_amazon(amz_search_query, browser, max_results=5)
+                amz_results = search_amazon(amz_search_query, browser_amz, max_results=5)
                 
                 # 1. Amazon内検索でヒットした場合（画像あり）
                 amz_for_judge = [{\"img_url\": r.get(\"img_url\", \"\"), \"page_url\": r.get(\"page_url\", \"\"), \"_orig\": r}
@@ -438,7 +473,7 @@ def execute_research_session(url, browser):
                         if amz_url:
                             amz_urls_checked.append(amz_url)
                             print(f\"    [MATCH] Amazonで一致商品を発見 (Score: {best_amz['score']:.1f}%).\")
-                            amz_specs = scrape_amazon_specs(amz_url, browser)
+                            amz_specs = scrape_amazon_specs(amz_url, browser_amz)
                             if weight_final == \"不明\" and amz_specs.get(\"weight\") != \"不明\":
                                 weight_final = truncate_weight(amz_specs[\"weight\"])
                             if dims_final == \"不明\" and amz_specs.get(\"dimensions\") != \"不明\":
@@ -455,7 +490,7 @@ def execute_research_session(url, browser):
                 # 2. 画像なし or 類似度不足 → Google経由
                 if not amz_for_judge or not amz_results:
                     print(\"    [!] Amazon内検索でヒットしないため、Google経由でAmazonを検索します...\")
-                    amz_google_results = search_amazon_via_google(amz_search_query, browser, max_results=3)
+                    amz_google_results = search_amazon_via_google(amz_search_query, browser_amz, max_results=3)
                     
                     if amz_google_results:
                         for r in amz_google_results:
@@ -464,12 +499,10 @@ def execute_research_session(url, browser):
                                 amz_urls_checked.append(amz_url)
                             print(f\"    [*] Google経由で発見したページを解析中: {amz_url}\")
                             
-                            # --- 🌟 追加: Amazon詳細ページを開いて画像を直接取得し、判定する ---
-                            tab = browser.latest_tab
+                            tab = browser_amz.latest_tab
                             tab.get(amz_url)
                             tab.wait(2)
                             
-                            # 画像要素の取得 (Amazonの商品画像は主に #landingImage か #imgBlkFront)
                             img_ele = tab.ele('#landingImage') or tab.ele('#imgBlkFront')
                             if img_ele:
                                 amz_img_src = img_ele.attr('src') or img_ele.attr('data-old-hires')
@@ -481,10 +514,8 @@ def execute_research_session(url, browser):
                                         print(f\"    [SKIP] 画像判定不合格 (Score: {score:.1f}%)\")
                                         continue
                                     print(f\"    [MATCH] 画像判定合格！スペックを抽出します...\")
-                            # --------------------------------------------------------
                             
-                            # 判定に合格した場合（または画像が取れなかった場合）にスペック抽出
-                            amz_specs = scrape_amazon_specs(amz_url, browser)
+                            amz_specs = scrape_amazon_specs(amz_url, browser_amz)
                             
                             found_any = False
                             if weight_final == \"不明\" and amz_specs.get(\"weight\") != \"不明\":
@@ -502,6 +533,8 @@ def execute_research_session(url, browser):
                             if found_any:
                                 print(\"    [MATCH] Google経由のAmazonページからスペックの補完に成功しました。\")
                                 break
+                try: browser_amz.quit()
+                except: pass
                                 
             except Exception as e:
                 print(f\"    [!] Amazonスペック補完中にエラー: {e}\")
@@ -599,11 +632,8 @@ def execute_research_session(url, browser):
                 
                 # 日本で見つかった最安値商品のコンディションを判別
                 best_cond_str = str(best_item.get(\"condition\", \"\")).lower()
-                # 1. 「新品」「new」が含まれているか判定
                 contains_new = \"新品\" in best_cond_str or \"new\" in best_cond_str
-                # 2. 中古を示唆するキーワードが含まれているか判定（「同様」「展示」などは新古品＝USED扱い）
                 is_used_keyword = any(k in best_cond_str for k in [\"中古\", \"used\", \"2\", \"傷\", \"汚れ\", \"近い\", \"同様\", \"訳あり\", \"展示\", \"ランク\"])
-                # 3. 「未開封」があれば新品扱いを優先
                 is_unopened = \"未開封\" in best_cond_str
                 
                 if is_unopened:
@@ -625,13 +655,11 @@ def execute_research_session(url, browser):
                         print(f\"    [!] {label}で新品が見つからないため、中古で再検索します...\")
                         top3 = process_market(token, market_id, final_en_name, img_url, \"USED\", model_number=ebay_model_number, exclude_id=item_id, ebay_title=target_item.get('title', ''), base_thresholds=domestic_thresholds)
                     
-                    # 結果が0件のとき、ターゲット自身を価格参照としてフォールバック
                     if not top3:
                         ebay_price = target_item.get(\"price\")
                         ebay_url   = f\"https://www.ebay.com/itm/{item_id}\"
                         if ebay_price:
                             try:
-                                # 文字列として受け取る可能性があるため変換
                                 price_val = float(str(ebay_price).replace(\",\", \"\").replace(\"$\", \"\").strip())
                                 print(f\"    [!] {label}: 競合0件のため、ターゲット自身の価格をフォールバックとして使用 (${price_val:.2f})\")
                                 top3 = [{
@@ -655,7 +683,6 @@ def execute_research_session(url, browser):
                     us_top3 = fut_us.result()
                     uk_top3 = fut_uk.result()
 
-                # ミラーリングロジック
                 if us_top3 and not uk_top3:
                     print(\"[*] UK の結果が空のため、US の結果を UK にミラーリングします。\")
                     uk_top3 = us_top3.copy()
@@ -679,9 +706,8 @@ def execute_research_session(url, browser):
                             print(f\"    - URL:      {hyperlink(res['item_url'])}\")
             else:
                 print(\"[!] eBay APIトークンが取得できなかったため、競合チェックをスキップします。\")
-        # 6. Excelへの自動書き込み
+        
         if best_item:
-            # 書き込み用データの整形
             def ext_dim(d_str, idx):
                 nums = re.findall(r\"\d+\", d_str)
                 return nums[idx] if len(nums) > idx else \"\"
@@ -690,7 +716,6 @@ def execute_research_session(url, browser):
                 match = re.search(r\"\d+\", w_str.replace(\",\", \"\"))
                 return match.group() if match else \"\"
 
-            # 保存された ebay_condition を取得
             final_ebay_condition = best_item.get('ebay_condition', ebay_condition)
 
             item_data = {
@@ -767,10 +792,8 @@ def execute_research_session(url, browser):
         _m, _s = divmod(int(_elapsed.total_seconds()), 60)
         print(f\"{BLUE}[*] 処理時間: {_m}分{_s}秒{RESET}\")
         
-        # トークン統計の表示
         print_token_stats()
         
-        # Windows トースト通知
         try:
             import subprocess
             _title = \"eBayリサーチ完了\"
