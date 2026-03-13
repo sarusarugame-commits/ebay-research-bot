@@ -135,7 +135,7 @@ def scrape_ebay_newest_items(search_url, page):
         # DrissionPage によるページ取得
         page.get(search_url)
         page.wait.load_start()
-        time.sleep(3)
+        time.sleep(2)
         handle_ebay_popups(page)
         
         # ⚠️ 専用プロファイルのクッキーを利用するため、配送先の手動設定は行いません
@@ -365,6 +365,6 @@ if __name__ == "__main__":
     test_url = "https://www.ebay.com/sch/i.html?_ssn=greenepron&_sop=10"
     items = scrape_ebay_newest_items(test_url, page)
     if items:
-        specs = scrape_ebay_item_specs(items[0]['id'], page)
+        specs = specs = scrape_ebay_item_specs(items[0]['id'], page)
         print(specs)
     if page: page.quit()
