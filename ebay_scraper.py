@@ -63,7 +63,15 @@ def scrape_ebay_newest_items(search_url, page):
         # これを回避するため、Bot検知をクリアしたブラウザのCookieを使って、JS実行前の生HTMLを取得します。
         import requests
         try:
-            cookies = page.cookies(as_dict=True)
+            # DrissionPageのバージョン互換性を保つため、as_dictを使わずに手動で辞書型へ変換
+            raw_cookies = page.cookies()
+            if isinstance(raw_cookies, list):
+                cookies = {c['name']: c['value'] for c in raw_cookies if 'name' in c and 'value' in c}
+            elif isinstance(raw_cookies, dict):
+                cookies = raw_cookies
+            else:
+                cookies = {}
+                
             headers = {
                 "User-Agent": page.user_agent,
                 "Accept-Language": "ja,en-US;q=0.9,en;q=0.8"
