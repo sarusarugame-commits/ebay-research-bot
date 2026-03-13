@@ -1,5 +1,7 @@
 from DrissionPage import ChromiumPage, ChromiumOptions
 from scrapling.parser import Adaptor
+from scrapling import Fetcher
+from bs4 import BeautifulSoup
 import time
 import re
 import os
@@ -50,18 +52,21 @@ def scrape_ebay_newest_items(search_url, page):
     """
     print(f"[*] eBayアクセス開始: {search_url}", flush=True)
     try:
-        page.get(search_url)
-        # ページ読み込み完了を待機
-        page.wait.load_start()
-        time.sleep(3)
-        handle_ebay_popups(page)
+        # DrissionPage ではなくボット検知に強い Scrapling Fetcher を使用して取得
+        fetcher = Fetcher()
+        response = fetcher.get(search_url)
         
-        # 動的読み込みを促すためにスクロール
-        page.scroll.down(5000)
-        time.sleep(2)
-        
+        if response.status != 200:
+            print(f"[!] eBay取得エラー (Status {response.status})")
+            return []
+            
+        html = response.text
+        if "Pardon our interruption" in html or "captcha" in html.lower():
+            print("[!] eBayのボット検知によりブロックされました。")
+            return []
+
         # Scrapling を使用してパース
-        adaptor = Adaptor(page.html)
+        adaptor = Adaptor(html)
         
         # セレクタの候補をすべて取得して統合する
         # .s-item (通常の検索), .s-card (セラーページ等), li[data-viewport] (遅延読み込み用)
@@ -96,7 +101,7 @@ def scrape_ebay_newest_items(search_url, page):
                 item_url = ""
                 item_id = ""
                 
-                # 1. 既知 pillars のリンククラスを優先
+                # 1. 既知のリンククラスを優先
                 link_targets = ['a.s-item__link', 'a.s-card__link', 'a[href*="/itm/"]', 'a']
                 for l_sel in link_targets:
                     links = elem.css(l_sel)
