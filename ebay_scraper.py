@@ -76,7 +76,7 @@ def scrape_ebay_newest_items(search_url, page):
             
             if not title_tag or not link_tag:
                 continue
-                
+            
             title = title_tag.get_text(strip=True)
             url = link_tag.get('href')
             
@@ -96,9 +96,6 @@ def scrape_ebay_newest_items(search_url, page):
             if img_tag:
                 # 属性 src, data-src, src-set などから最適なものを拾う
                 image_url = img_tag.get('data-src') or img_tag.get('src') or ""
-            
-            # 時間（新着順に並んでいる前提だが、念のため「何分前」などを取得したい場合）
-            # time_tag = s_item.select_one('.s-item__time-left, .s-item__listing-date')
             
             items.append({
                 'id': item_id,
@@ -130,12 +127,28 @@ def scrape_ebay_item_specs(item_id, browser):
         tab.wait.load_start()
         time.sleep(2)
         
-        specs = {"weight": "不明", "dimensions": "不明", "img_urls": []}
-        
-        # スペック表 (Item Specifics) を解析
-        # モバイル・PC版で構造が違う場合があるが、概ね .ux-layout-section--item-specifics
+        # 商品情報の抽出
         soup = BeautifulSoup(tab.html, 'html.parser')
         
+        # タイトルの取得
+        title_tag = soup.select_one('.x-item-title__mainTitle')
+        title = title_tag.get_text(strip=True) if title_tag else "不明"
+        
+        # 価格の取得 (USD)
+        price_tag = soup.select_one('.x-price-primary span, #prclbl')
+        price_str = price_tag.get_text(strip=True) if price_tag else "0"
+        price_val = re.sub(r'[^\d\.]', '', price_str)
+        price_usd = float(price_val) if price_val else 0.0
+
+        specs = {
+            "title": title,
+            "price_usd": price_usd,
+            "weight": "不明", 
+            "dimensions": "不明", 
+            "img_urls": []
+        }
+        
+        # スペック表 (Item Specifics) を解析
         spec_text = ""
         spec_section = soup.select_one('.ux-layout-section--item-specifics, .item-specifics')
         if spec_section:
@@ -144,9 +157,7 @@ def scrape_ebay_item_specs(item_id, browser):
         # 商品説明 (iframe内) を解析
         desc_frame = tab.ele('#desc_ifr', timeout=2)
         if desc_frame:
-            # iframe内に入る
             try:
-                # iframeの要素を取得して、その中のHTMLをパース
                 desc_html = desc_frame.inner_html
                 desc_soup = BeautifulSoup(desc_html, 'html.parser')
                 spec_text += " " + desc_soup.get_text(" ", strip=True)
@@ -154,35 +165,28 @@ def scrape_ebay_item_specs(item_id, browser):
                 pass
         
         # 重力と重量のキーワードで正規表現抽出
-        # Weight: 1.5 kg, Item Weight: 500g など
         w_match = re.search(r'(?:Weight|Mass|重量)[:：\s]*([\d\.]+\s*(?:kg|g|lb|oz|キロ|グラム))', spec_text, re.I)
         if w_match: specs["weight"] = w_match.group(1)
         
         # 寸法
-        # Dimensions: 10 x 20 x 5 cm など
         d_match = re.search(r'(?:Dimensions|Size|サイズ|外寸)[:：\s]*([\d\.]+\s*[x*×]\s*[\d\.]+\s*[x*×]\s*[\d\.]+\s*(?:cm|mm|in|センチ|ミリ))', spec_text, re.I)
         if d_match: specs["dimensions"] = d_match.group(1)
         
         # 追加画像URLの抽出
         img_urls = []
-        # メイン画像エリアのサムネイルやメイン画像から抽出
-        # ux-image-filmstrip-carousel など
         for img in soup.select('.ux-image-filmstrip-carousel img, .picture-panel img'):
             src = img.get('data-src') or img.get('src')
             if src and "s-l" in src:
-                # 高解像度版に変換 (s-l64, s-l500 など)
                 high_res = re.sub(r's-l\d+', 's-l500', src)
                 if high_res not in img_urls:
                     img_urls.append(high_res)
         
-        # 1枚も取れなかった場合はメイン画像だけを確保
         if not img_urls:
             main_img = soup.select_one('.ux-image-magnifier-view img, #mainImgH0')
             if main_img:
                 src = main_img.get('src')
                 if src: img_urls.append(re.sub(r's-l\d+', 's-l500', src))
 
-        # 重複除去 & サニタイズ
         img_urls = [u for u in img_urls if u and u.startswith('http')]
         specs["img_urls"] = img_urls
         
@@ -211,4 +215,4 @@ if __name__ == "__main__":
     if items:
         specs = scrape_ebay_item_specs(items[0]['id'], page)
         print(specs)
-    page.quit()
+    if page: page.quit()
