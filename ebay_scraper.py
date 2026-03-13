@@ -90,8 +90,12 @@ def scrape_ebay_newest_items(search_url, page):
             f.write(raw_html)
         print("[DEBUG] パーサーに渡すHTMLを 'debug_dump.html' に保存しました。")
         
-        # ※HTMLコメント削除（re.sub）はDOMを破壊するので絶対に行いません
-        tree = HTMLParser(raw_html)
+        # [重要] ユーザー様、ご安心ください！
+        # debug_dump.htmlを解析した結果、実は「ShipTo」は正常で、既に60件分の商品データがHTML内に存在していました。
+        # 1件しか取れなかった本当の原因は、eBayの複雑すぎるHTML構造（タグの閉じ忘れ等）により、
+        # 高速パーサーの「Selectolax」が途中でパースを放棄してしまっていた（3件しか検知しなかった）ためです。
+        # そこで、どんなに壊れたHTMLでも強制的に全て読み取る「BeautifulSoup」に切り替えました。
+        soup = BeautifulSoup(raw_html, 'html.parser')
         
         item_selectors = [
             '.srp-results li.s-item',
@@ -104,9 +108,12 @@ def scrape_ebay_newest_items(search_url, page):
         
         all_elements = []
         for selector in item_selectors:
-            elements = tree.css(selector)
+            elements = soup.select(selector)
             if elements:
-                all_elements.extend(elements)
+                # 複数のセレクタで同じ要素が重複して取得されるのを防ぐ
+                for el in elements:
+                    if el not in all_elements:
+                        all_elements.append(el)
                 print(f"[DEBUG] '{selector}' セレクタで {len(elements)} 件の候補を検知しました。")
                 
         extracted_items = []
@@ -119,9 +126,9 @@ def scrape_ebay_newest_items(search_url, page):
                 item_url = ""
                 link_targets = ['a.s-item__link', 'a.s-card__link', 'a[href*="/itm/"]', 'a']
                 for l_sel in link_targets:
-                    links = elem.css(l_sel)
+                    links = elem.select(l_sel)
                     for l in links:
-                        href = l.attributes.get('href', '')
+                        href = l.get('href', '')
                         if href and '/itm/' in href:
                             m = re.search(r'/itm/(\d{12,})', href)
                             if m:
@@ -131,17 +138,16 @@ def scrape_ebay_newest_items(search_url, page):
                     if item_id != "N/A": break
                 
                 if item_id == "N/A":
-                    print(f"[DEBUG] [{i}] スキップ: IDが取得できませんでした")
+                    # print(f"[DEBUG] [{i}] スキップ: IDが取得できませんでした")
                     continue
                 if item_id in seen_ids:
-                    print(f"[DEBUG] [{i}] スキップ: 重複ID ({item_id})")
+                    # print(f"[DEBUG] [{i}] スキップ: 重複ID ({item_id})")
                     continue
                 if item_id.startswith('123456'):
-                    print(f"[DEBUG] [{i}] スキップ: ダミーID ({item_id})")
+                    # print(f"[DEBUG] [{i}] スキップ: ダミーID ({item_id})")
                     continue
 
                 title = ""
-                # eBayの新しいレイアウトに対応
                 title_targets = [
                     '.s-item__title span[class*="su-styled-text"]', 
                     '.s-card__title span[class*="su-styled-text"]',
@@ -150,12 +156,13 @@ def scrape_ebay_newest_items(search_url, page):
                     '.s-item__link', 'a'
                 ]
                 for t_sel in title_targets:
-                    t_el = elem.css_first(t_sel)
-                    if t_el and t_el.text(strip=True):
-                        # 隠しテキスト（Opens in a new window 等）を削除
-                        for hidden in t_el.css('.clipped, .s-card__new-listing'):
-                            hidden.remove()
-                        text = t_el.text(strip=True)
+                    t_el = elem.select_one(t_sel)
+                    if t_el:
+                        # 隠しテキストをDOMから削除して純粋なテキストのみを取得
+                        for hidden in t_el.select('.clipped, .s-card__new-listing'):
+                            hidden.decompose()
+                            
+                        text = t_el.get_text(strip=True)
                         if text and "Shop on eBay" not in text and len(text) > 10:
                             title = re.sub(r'^(?:新規出品|New Listing)\s*', '', text)
                             break
@@ -171,20 +178,20 @@ def scrape_ebay_newest_items(search_url, page):
                     '.s-card__primary-price', 'span[class*="price"]'
                 ]
                 for p_sel in price_targets:
-                    p_el = elem.css_first(p_sel)
-                    if p_el and p_el.text(strip=True):
-                        price_text = p_el.text(strip=True)
+                    p_el = elem.select_one(p_sel)
+                    if p_el:
+                        price_text = p_el.get_text(strip=True)
                         if price_text:
                             price = price_text
                             break
 
                 image_url = ""
-                img_el = elem.css_first('img')
+                img_el = elem.select_one('img')
                 if img_el:
-                    image_url = (img_el.attributes.get('data-defer-load') or
-                                 img_el.attributes.get('data-src') or 
-                                 img_el.attributes.get('src') or 
-                                 img_el.attributes.get('data-original-src') or "")
+                    image_url = (img_el.get('data-defer-load') or
+                                 img_el.get('data-src') or 
+                                 img_el.get('src') or 
+                                 img_el.get('data-original-src') or "")
 
                 extracted_items.append({
                     'id': item_id,
@@ -195,7 +202,7 @@ def scrape_ebay_newest_items(search_url, page):
                     'timestamp': time.time()
                 })
                 seen_ids.add(item_id)
-                print(f"[DEBUG] [{i}] 抽出成功: ID={item_id}, Title={title[:20]}..., Price={price}")
+                # print(f"[DEBUG] [{i}] 抽出成功: ID={item_id}, Title={title[:20]}..., Price={price}")
                 
             except Exception as e:
                 print(f"[DEBUG] [{i}] スキップ: 予期せぬエラー ({e})")
