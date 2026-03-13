@@ -62,12 +62,31 @@ def scrape_ebay_newest_items(search_url, page):
         page.scroll.down(5000)
         time.sleep(2)
         
-        # HTML 取得
-        raw_html = page.html
+        # --- 重要: JavaScript で HTML コメント内の商品を活性化 ---
+        # DrissionPageの page.html で取得すると、コメント内がエスケープされてパースできないため、
+        # DOM上で直接コメントノードを検知し、実体化（活性化）させてからHTMLを取得します。
+        js_code = """
+        let iterator = document.createNodeIterator(document.body, NodeFilter.SHOW_COMMENT, null, false);
+        let node;
+        let count = 0;
+        while (node = iterator.nextNode()) {
+            if (node.nodeValue.includes('s-item') || node.nodeValue.includes('s-card')) {
+                let tempDiv = document.createElement('div');
+                tempDiv.innerHTML = node.nodeValue;
+                node.parentNode.insertBefore(tempDiv, node);
+                count++;
+            }
+        }
+        return count;
+        """
+        try:
+            activated_count = page.run_js(js_code)
+            print(f"[DEBUG] JSにより {activated_count} 個のコメントブロックをDOM上に展開しました。")
+        except Exception as e:
+            print(f"[DEBUG] JS展開中にエラー: {e}")
         
-        # --- 重要: HTML コメントを除去して隠れたコンテンツを活性化 ---
-        # eBay は商品リストの大部分を <!-- ... --> 内に隠蔽することがあるため除去
-        activated_html = re.sub(r'<!--|-->', '', raw_html)
+        # 展開後の HTML を取得
+        activated_html = page.html
         
         # 高速かつ堅牢な Selectolax を使用してパース
         tree = HTMLParser(activated_html)
