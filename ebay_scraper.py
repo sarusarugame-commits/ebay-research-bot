@@ -45,73 +45,41 @@ def scrape_ebay_newest_items(search_url, page):
         page.scroll.down(2000)
         time.sleep(2)
         
-        soup = BeautifulSoup(page.html, 'html.parser')
-        
-        _s_item_count = len(soup.select('.s-item'))
-        _li_count = len(soup.select('ul.srp-results li'))
-        _viewport_count = len(soup.select('li[data-viewport]'))
+        html = page.html
         
         # -------------------------------------------------------------------
-        # eBay は HTML 構造を頻繁に変更する。最も多くヒットするセレクターを使用する。
+        # eBayの最新仕様: HTMLタグ（DOM）の中に直接商品が描画されず、
+        # <a href="/itm/..."> などの実体がダミー（/itm/123456...など）になるケースが頻発する。
+        # 解決策: HTMLソース全体から「/itm/12ケタ以上の数字」のURLを根こそぎ正規表現で抜き出し、
+        # 重複やダミーを排除してアイテムリストを構築する。
         # -------------------------------------------------------------------
-        candidates = {
-            'li.s-item': soup.select('li.s-item'),
-            'ul li[data-viewport]': soup.select('ul.srp-results li[data-viewport]'),
-            'li[data-viewport]': soup.select('li[data-viewport]'),
-            'ul.srp-results li': soup.select('ul.srp-results li'),
-        }
-        best_key = max(candidates, key=lambda k: len(candidates[k]))
-        item_elements = candidates[best_key]
-        print(f"[DEBUG] 使用セレクター: {best_key} ({len(item_elements)}件) / .s-item={_s_item_count}, ul li={_li_count}, viewport={_viewport_count}", flush=True)
         
+        url_pattern = r'(https://www\.ebay\.com/itm/\d{12,}[^\s\"\'\\]*)'
+        raw_urls = re.findall(url_pattern, html)
+        
+        unique_ids = {}
+        for u in raw_urls:
+            m = re.search(r'/itm/(\d{12,})', u)
+            if m:
+                item_id = m.group(1)
+                # ダミーIDは除外
+                if item_id in ['123456789012', '1234567890123'] or item_id.startswith('123456'):
+                    continue
+                if item_id not in unique_ids:
+                    # クエリパラメータを取り除いてユニークなURLにする
+                    clean_url = u.split('?')[0] if '?' in u else u
+                    unique_ids[item_id] = clean_url
+        
+        print(f"[DEBUG] HTML内から固有の商品IDを {len(unique_ids)} 件抽出しました。", flush=True)
+
         items = []
-        for elem in item_elements:
-            # URLから item ID を直接拾う（タグ構造に依存しない）
-            link_tag = elem.select_one('a[href*="/itm/"]')
-            if not link_tag:
-                continue
-            
-            url = link_tag.get('href', '')
-            
-            # 正規のアイテムIDは12ケタ以上の数字のみ
-            item_id_match = re.search(r'/itm/(\d{12,})', url)
-            if not item_id_match:
-                continue
-                
-            item_id = item_id_match.group(1)
-            # よくあるダミー連番を除外
-            if item_id in ['123456789012', '1234567890123'] or item_id.startswith('123456'):
-                continue
-
-            # タイトル: 複数セレクターで試す
-            title = ""
-            for sel in ['.s-item__title', 'h3', '.srp-item-title', 'h2']:
-                t = elem.select_one(sel)
-                if t:
-                    title = t.get_text(strip=True)
-                    break
-            if not title:
-                title = link_tag.get('aria-label') or link_tag.get_text(strip=True) or "タイトル不明"
-            
-            if "Shop on eBay" in title:
-                continue
-
-            # 価格
-            price_tag = elem.select_one('.s-item__price, [itemprop="price"]')
-            price = price_tag.get_text(strip=True) if price_tag else "N/A"
-
-            # 画像
-            img_tag = elem.select_one('img')
-            image_url = ""
-            if img_tag:
-                image_url = img_tag.get('data-src') or img_tag.get('src') or ""
-            
+        for item_id, url in unique_ids.items():
             items.append({
                 'id': item_id,
-                'title': title,
-                'price': price,
+                'title': f"eBay Item {item_id}", # プレースホルダー（後で詳細ページで取得）
+                'price': "N/A",                  # プレースホルダー
                 'url': url,
-                'image_url': image_url,
+                'image_url': "",
                 'timestamp': time.time()
             })
             
@@ -121,7 +89,6 @@ def scrape_ebay_newest_items(search_url, page):
     except Exception as e:
         print(f"[!] スクレイピング失敗: {e}", flush=True)
         return []
-
 
 def scrape_ebay_item_specs(item_id, browser):
     """eBay詳細からスペック抽出"""
