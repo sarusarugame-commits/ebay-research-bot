@@ -66,16 +66,24 @@ def scrape_ebay_newest_items(search_url, page):
         
         items = []
         for elem in item_elements:
+            # URLから item ID を直接拾う（タグ構造に依存しない）
             link_tag = elem.select_one('a[href*="/itm/"]')
             if not link_tag:
                 continue
             
             url = link_tag.get('href', '')
-            item_id_match = re.search(r'/itm/(\d+)', url)
-            item_id = item_id_match.group(1) if item_id_match else None
-            if not item_id:
+            
+            # 正規のアイテムIDは12ケタ以上の数字のみ
+            item_id_match = re.search(r'/itm/(\d{12,})', url)
+            if not item_id_match:
+                continue
+                
+            item_id = item_id_match.group(1)
+            # よくあるダミー連番を除外
+            if item_id in ['123456789012', '1234567890123'] or item_id.startswith('123456'):
                 continue
 
+            # タイトル: 複数セレクターで試す
             title = ""
             for sel in ['.s-item__title', 'h3', '.srp-item-title', 'h2']:
                 t = elem.select_one(sel)
@@ -88,9 +96,11 @@ def scrape_ebay_newest_items(search_url, page):
             if "Shop on eBay" in title:
                 continue
 
+            # 価格
             price_tag = elem.select_one('.s-item__price, [itemprop="price"]')
             price = price_tag.get_text(strip=True) if price_tag else "N/A"
 
+            # 画像
             img_tag = elem.select_one('img')
             image_url = ""
             if img_tag:
