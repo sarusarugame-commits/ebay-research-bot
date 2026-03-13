@@ -57,93 +57,124 @@ def scrape_ebay_newest_items(search_url, page):
         handle_ebay_popups(page)
         
         # 動的読み込みを促すためにスクロール
-        page.scroll.down(4000)
+        page.scroll.down(5000)
         time.sleep(2)
         
         # Scrapling を使用してパース
         adaptor = Adaptor(page.html)
         
-        # 複数のコンテナセレクタ（s-item, srp-results内のli, および新しい s-card）に対応
-        # セレクタを OR 条件で指定
+        # セレクタの候補をすべて取得して統合する
+        # .s-item (通常の検索), .s-card (セラーページ等), li[data-viewport] (遅延読み込み用)
         item_selectors = [
             '.srp-results li.s-item',
             'li.s-item',
             '.s-card-container',
             '.s-card',
-            'li[data-viewport]'
+            'li[data-viewport]',
+            '.srp-list li'
         ]
         
-        items_found = []
+        all_elements = []
         for selector in item_selectors:
             elements = adaptor.css(selector)
             if elements:
-                items_found = elements
-                print(f"[DEBUG] '{selector}' セレクタで {len(elements)} 件の商品を検知しました。")
-                break
+                all_elements.extend(elements)
+                print(f"[DEBUG] '{selector}' セレクタで {len(elements)} 件の候補を検知しました。")
         
-        if not items_found:
-            # 最終手段として全ての li 要素を走査（より広い網）
-            items_found = adaptor.css('li')
-            print(f"[DEBUG] フォールバックとして全ての 'li' ({len(items_found)} 件) を調査します。")
+        if not all_elements:
+            # 最終手段として全ての li 要素を走査
+            all_elements = adaptor.css('li')
+            print(f"[DEBUG] フォールバックとして全ての 'li' ({len(all_elements)} 件) を調査します。")
 
         extracted_items = []
-        for elem in items_found:
+        seen_ids = set()
+
+        for elem in all_elements:
             try:
-                # リンクの抽出（URLから商品IDを特定）
-                link_el = elem.css('a[href*="/itm/"]').first()
-                if not link_el:
+                # --- リンクとIDの抽出 ---
+                # すべての a タグを走査して /itm/ を含むものを探す（より広範に）
+                item_url = ""
+                item_id = ""
+                
+                # 1. 既知 pillars のリンククラスを優先
+                link_targets = ['a.s-item__link', 'a.s-card__link', 'a[href*="/itm/"]', 'a']
+                for l_sel in link_targets:
+                    links = elem.css(l_sel)
+                    for l in links:
+                        href = l.attributes.get('href', '')
+                        if href and '/itm/' in href:
+                            # ID抽出 (12桁以上の数字)
+                            m = re.search(r'/itm/(\d{12,})', href)
+                            if m:
+                                item_id = m.group(1)
+                                # クリーンなURLを作成
+                                item_url = f"https://www.ebay.com/itm/{item_id}"
+                                break
+                    if item_id: break
+                
+                if not item_id or item_id in seen_ids:
                     continue
                 
-                url = link_el.attributes.get('href', '')
-                if not url:
-                    continue
-                
-                # 商品ID (12桁) 抽出
-                m = re.search(r'/itm/(\d{12,})', url)
-                if not m:
-                    continue
-                item_id = m.group(1)
-                
-                # 重複チェック
-                if any(x['id'] == item_id for x in extracted_items):
+                # ダミーID除外
+                if item_id.startswith('123456'):
                     continue
 
-                # タイトルの抽出（複数の可能性を試行）
+                # --- タイトルの抽出 ---
                 title = ""
-                title_targets = ['.s-item__title', '.s-card__title', 'h3', 'h2', 'span[role="heading"]']
+                title_targets = [
+                    '.s-item__title', '.s-card__title', 
+                    '[role="heading"]', 'h3', 'h2', 'h1', 
+                    '.s-item__link', 'a'
+                ]
                 for t_sel in title_targets:
                     t_el = elem.css(t_sel).first()
                     if t_el and t_el.text:
-                        title = t_el.text.strip()
-                        break
+                        text = t_el.text.strip()
+                        # "Shop on eBay" や空文字、短すぎるタイトルを除外
+                        if text and "Shop on eBay" not in text and len(text) > 10:
+                            # "新規出品" などのプレフィックスを除去（必要に応じて）
+                            title = re.sub(r'^(?:新規出品|New Listing)\s*', '', text)
+                            break
                 
-                if not title or "Shop on eBay" in title:
+                if not title:
+                    # タイトルが見つからない場合はスキップ
                     continue
 
-                # 価格の抽出
+                # --- 価格の抽出 ---
                 price = "N/A"
-                price_targets = ['.s-item__price', '.s-card__price', '.su-price', '.s-item__primary-price']
+                price_targets = [
+                    '.s-item__price', '.s-card__price', 
+                    '.su-price', '.s-item__primary-price',
+                    '.s-card__primary-price', 'span[class*="price"]'
+                ]
                 for p_sel in price_targets:
                     p_el = elem.css(p_sel).first()
                     if p_el and p_el.text:
-                        price = p_el.text.strip()
-                        break
+                        price_text = p_el.text.strip()
+                        if price_text:
+                            price = price_text
+                            break
 
-                # 画像の抽出
+                # --- 画像の抽出 ---
                 image_url = ""
                 img_el = elem.css('img').first()
                 if img_el:
-                    image_url = img_el.attributes.get('data-src') or img_el.attributes.get('src') or ""
+                    image_url = (img_el.attributes.get('data-src') or 
+                                 img_el.attributes.get('src') or 
+                                 img_el.attributes.get('data-original-src') or "")
 
                 extracted_items.append({
                     'id': item_id,
                     'title': title,
                     'price': price,
-                    'url': url,
+                    'url': item_url,
                     'image_url': image_url,
                     'timestamp': time.time()
                 })
-            except Exception:
+                seen_ids.add(item_id)
+                
+            except Exception as e:
+                # 個別要素のパース失敗は無視して続行
                 continue
             
         print(f" -> {len(extracted_items)} 件の本物の商品を抽出しました。", flush=True)
