@@ -157,7 +157,7 @@ def main():
 
                 # 2. 日本語名の特定
                 print("\n[*] LLMで日本語商品名を特定中...")
-                name_data = extract_product_name(ebay_title)
+                name_data = extract_product_name(ebay_title, scored_candidates=[], img_url=ebay_img_url)
                 final_name = name_data.get("full_name", "特定不能")
                 print(f" -> 最終確定した日本語名: {final_name}")
 

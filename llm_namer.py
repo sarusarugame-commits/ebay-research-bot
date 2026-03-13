@@ -137,7 +137,8 @@ def parse_llm_json(content):
     except Exception:
         return None
 
-def extract_product_name(ebay_title, scored_candidates, img_url=None):
+def extract_product_name(ebay_title, scored_candidates=None, img_url=None):
+    scored_candidates = scored_candidates or []
     titles = [c['title'] for c in scored_candidates if c.get('title')]
     freq_data = get_word_frequencies(titles)
     log_frequent_words(freq_data, "国内タイトル")
