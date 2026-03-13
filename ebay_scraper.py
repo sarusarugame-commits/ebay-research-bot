@@ -49,36 +49,46 @@ def handle_ebay_popups(tab):
 def set_ship_to_uk(page):
     """eBayの配送先(Ship To)をUK(イギリス)に設定する"""
     try:
-        current_ship = page.ele('.srp-controls--selected-value', timeout=2)
-        if current_ship and ('UK' in current_ship.text or 'GB' in current_ship.text or 'E1' in current_ship.text or 'United Kingdom' in current_ship.text):
-            print("[*] Ship To は既に UK に設定されています。")
-            return
+        # 現在の設定をチェック (日本語UI "お届け先: 日本" 等にも対応)
+        ship_btn = page.ele('.srp-controls--shipping-location button, .srp-shipping-location__flyout button, #gh-shipto-click', timeout=3)
+        if not ship_btn:
+            # ヘッダー側のボタンも試す
+            ship_btn = page.ele('xpath://button[contains(@aria-label, "Ship to") or contains(@aria-label, "お届け先")]', timeout=2)
+
+        if ship_btn:
+            current_text = ship_btn.text
+            if any(x in current_text for x in ['UK', 'GB', 'United Kingdom', 'イギリス', 'E1']):
+                print("[*] Ship To は既に UK に設定されています。")
+                return
             
-        print("[*] Ship To を UK に変更しています...")
-        btn = page.ele('.srp-controls--shipping-location button, .srp-shipping-location__flyout button', timeout=2)
-        if btn:
-            btn.click()
-            time.sleep(1)
+            print(f"[*] Ship To を UK に変更しています... (現在: {current_text})")
+            ship_btn.click()
+            time.sleep(1.5)
             
-            country_sel = page.ele('xpath://select[contains(@id, "select")]')
+            # 国選択ドロップダウン
+            country_sel = page.ele('xpath://select[contains(@id, "select") or contains(@aria-label, "Country") or contains(@aria-label, "国")]')
             if country_sel:
-                country_sel.select.by_text('United Kingdom - GBR')
+                try:
+                    country_sel.select.by_text('United Kingdom - GBR')
+                except:
+                    # 日本語UIの場合などを考慮
+                    country_sel.select.by_index(2) # 大抵上の方にあるはずだが、安全策としてテキスト優先
+                    
                 time.sleep(1)
                 
-            zip_input = page.ele('xpath://input[@aria-label="Zip code" or @autocomplete="postal-code"]', timeout=2)
-            if zip_input:
-                zip_input.clear()
-                zip_input.input('E1 6AN')
-                time.sleep(0.5)
-                
-            go_btn = page.ele('xpath://input[@type="submit" and @value="Go"]', timeout=2)
+            # 完了(Done/Go)ボタンをクリック (郵便番号入力はスキップ)
+            go_btn = page.ele('xpath://button[text()="Done" or text()="完了"]', timeout=2) or \
+                     page.ele('xpath://input[@type="submit" and (@value="Go" or @value="完了")]', timeout=2)
+            
             if go_btn:
                 go_btn.click()
                 page.wait.load_start()
                 time.sleep(3)
                 print("[*] Ship To を UK に変更しました。")
+            else:
+                print("[DEBUG] 完了ボタンが見つかりませんでした。")
     except Exception as e:
-        print(f"[DEBUG] Ship To の変更処理をスキップしました: {e}")
+        print(f"[DEBUG] Ship To の変更処理中にエラーが発生しました: {e}")
 
 def scrape_ebay_newest_items(search_url, page):
     """
@@ -280,9 +290,7 @@ def scrape_ebay_item_specs(item_id, browser):
             if src and src.startswith('http') and 's-l' in src:
                 high_res = re.sub(r's-l\d+', 's-l500', src)
                 if high_res not in img_urls:
-                    high_res = re.sub(r's-l\d+', 's-l500', src)
-                    if high_res not in img_urls:
-                        img_urls.append(high_res)
+                    img_urls.append(high_res)
         
         if not img_urls:
             for script_tag in soup.select('script[type="application/ld+json"]'):
