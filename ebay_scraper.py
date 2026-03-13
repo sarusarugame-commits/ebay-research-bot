@@ -2,6 +2,7 @@ from DrissionPage import ChromiumPage, ChromiumOptions
 from bs4 import BeautifulSoup
 import time
 import re
+import json
 import os
 import random
 
@@ -51,23 +52,20 @@ def scrape_ebay_newest_items(search_url, page):
         _viewport_count = len(soup.select('li[data-viewport]'))
         
         # -------------------------------------------------------------------
-        # eBay は HTML 構造を頻繁に変更する。コンテナの優先順位:
-        # 1. li.s-item / div.s-item__wrapper  (旧構造)
-        # 2. ul.srp-results li[data-viewport]  (新構造)
-        # 3. li[data-viewport] 全般
-        # 4. ul.srp-results li
+        # eBay は HTML 構造を頻繁に変更する。最も多くヒットするセレクターを使用する。
         # -------------------------------------------------------------------
-        item_elements = (
-            soup.select('li.s-item, div.s-item__wrapper') or
-            soup.select('ul.srp-results li[data-viewport]') or
-            soup.select('li[data-viewport]') or
-            soup.select('ul.srp-results li')
-        )
-        print(f"[DEBUG] containers={len(item_elements)} (.s-item={_s_item_count}, ul li={_li_count}, viewport={_viewport_count})", flush=True)
+        candidates = {
+            'li.s-item': soup.select('li.s-item'),
+            'ul li[data-viewport]': soup.select('ul.srp-results li[data-viewport]'),
+            'li[data-viewport]': soup.select('li[data-viewport]'),
+            'ul.srp-results li': soup.select('ul.srp-results li'),
+        }
+        best_key = max(candidates, key=lambda k: len(candidates[k]))
+        item_elements = candidates[best_key]
+        print(f"[DEBUG] 使用セレクター: {best_key} ({len(item_elements)}件) / .s-item={_s_item_count}, ul li={_li_count}, viewport={_viewport_count}", flush=True)
         
         items = []
         for elem in item_elements:
-            # URLから item ID を直接拾う（タグ構造に依存しない）
             link_tag = elem.select_one('a[href*="/itm/"]')
             if not link_tag:
                 continue
@@ -78,7 +76,6 @@ def scrape_ebay_newest_items(search_url, page):
             if not item_id:
                 continue
 
-            # タイトル: 複数セレクターで試す
             title = ""
             for sel in ['.s-item__title', 'h3', '.srp-item-title', 'h2']:
                 t = elem.select_one(sel)
@@ -91,11 +88,9 @@ def scrape_ebay_newest_items(search_url, page):
             if "Shop on eBay" in title:
                 continue
 
-            # 価格
             price_tag = elem.select_one('.s-item__price, [itemprop="price"]')
             price = price_tag.get_text(strip=True) if price_tag else "N/A"
 
-            # 画像
             img_tag = elem.select_one('img')
             image_url = ""
             if img_tag:
@@ -168,14 +163,36 @@ def scrape_ebay_item_specs(item_id, browser):
         d_match = re.search(r'(?:Dimensions|Size|サイズ|外寸)[:：\s]*([\d\.]+\s*[x*×]\s*[\d\.]+\s*[x*×]\s*[\d\.]+\s*(?:cm|mm|in|センチ|ミリ))', spec_text, re.I)
         if d_match: specs["dimensions"] = d_match.group(1)
         
+        # 画像の取得 (複数セレクターでフォールバック)
         img_urls = []
-        for img in soup.select('.ux-image-filmstrip-carousel img, .picture-panel img'):
-            src = img.get('data-src') or img.get('src')
-            if src and "s-l" in src:
+        
+        # 1. フィルムストリップ / ピクチャーパネル / カルーセル
+        for img in soup.select('.ux-image-filmstrip-carousel img, .picture-panel img, .ux-image-carousel-item img'):
+            src = img.get('data-src') or img.get('data-zoom-src') or img.get('src') or ''
+            if src and src.startswith('http') and 's-l' in src:
                 high_res = re.sub(r's-l\d+', 's-l500', src)
                 if high_res not in img_urls:
                     img_urls.append(high_res)
         
+        # 2. JSON-LD の image フィールド
+        if not img_urls:
+            for script_tag in soup.select('script[type="application/ld+json"]'):
+                try:
+                    data = json.loads(script_tag.string or '')
+                    if isinstance(data, dict):
+                        imgs = data.get('image', [])
+                        if isinstance(imgs, str): imgs = [imgs]
+                        img_urls.extend([u for u in imgs if u.startswith('http')])
+                except:
+                    pass
+        
+        # 3. og:image (Open Graph)
+        if not img_urls:
+            og_img = soup.select_one('meta[property="og:image"]')
+            if og_img and og_img.get('content'):
+                img_urls.append(og_img['content'])
+        
+        # 4. 一般的なメイン画像セレクター
         if not img_urls:
             main_img = soup.select_one('.ux-image-magnifier-view img, #mainImgH0')
             if main_img:
