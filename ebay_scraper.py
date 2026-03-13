@@ -5,16 +5,10 @@ import re
 import os
 import random
 
-# ======================================================================
-# ⚙️ 動作モード設定（True/False で切り替え）
-# ======================================================================
-# True  = クライアント仕様: 常に ebay.com(US) を使い、Ship to だけをUS/UKに切り替える（通貨はUSD）
-# False = 本来の仕様: USは ebay.com、UKは ebay.co.uk の現地サイトを使い分ける
 USE_STRICT_CLIENT_MODE = True
-# ======================================================================
 
 def get_browser_page():
-    """DrissionPageのインスタンスを生成する (共通設定)"""
+    """DrissionPageのインスタンスを生成する"""
     try:
         co = ChromiumOptions()
         co.set_argument('--no-sandbox')
@@ -45,52 +39,64 @@ def scrape_ebay_newest_items(search_url, page):
     try:
         page.get(search_url)
         page.wait.load_start()
-        time.sleep(5)  # JS描画待ち（長めに確保）
-        handle_ebay_popups(page)
-        
-        page.scroll.down(3000)
         time.sleep(3)
+        handle_ebay_popups(page)
+        page.scroll.down(2000)
+        time.sleep(2)
         
         soup = BeautifulSoup(page.html, 'html.parser')
         
-        # デバッグ: どの構造が存在するか確認
         _s_item_count = len(soup.select('.s-item'))
         _li_count = len(soup.select('ul.srp-results li'))
         _viewport_count = len(soup.select('li[data-viewport]'))
-        print(f"[DEBUG] .s-item={_s_item_count}, ul.srp-results li={_li_count}, li[data-viewport]={_viewport_count}", flush=True)
         
-        # 複数のセレクターを試す（eBayのHTML構造変更に対応）
+        # -------------------------------------------------------------------
+        # eBay は HTML 構造を頻繁に変更する。コンテナの優先順位:
+        # 1. li.s-item / div.s-item__wrapper  (旧構造)
+        # 2. ul.srp-results li[data-viewport]  (新構造)
+        # 3. li[data-viewport] 全般
+        # 4. ul.srp-results li
+        # -------------------------------------------------------------------
         item_elements = (
-            soup.select('.s-item') or
+            soup.select('li.s-item, div.s-item__wrapper') or
+            soup.select('ul.srp-results li[data-viewport]') or
             soup.select('li[data-viewport]') or
-            soup.select('ul.srp-results li.s-item') or
-            soup.select('div.s-item__wrapper')
+            soup.select('ul.srp-results li')
         )
+        print(f"[DEBUG] containers={len(item_elements)} (.s-item={_s_item_count}, ul li={_li_count}, viewport={_viewport_count})", flush=True)
         
         items = []
-        for s_item in item_elements:
-            text = s_item.get_text()
-            if "Shop on eBay" in text:
+        for elem in item_elements:
+            # URLから item ID を直接拾う（タグ構造に依存しない）
+            link_tag = elem.select_one('a[href*="/itm/"]')
+            if not link_tag:
                 continue
             
-            title_tag = s_item.select_one('.s-item__title, h3.s-item__title')
-            link_tag = s_item.select_one('.s-item__link, a[href*="/itm/"]')
-            
-            if not title_tag or not link_tag:
-                continue
-                
-            title = title_tag.get_text(strip=True)
             url = link_tag.get('href', '')
-            
             item_id_match = re.search(r'/itm/(\d+)', url)
             item_id = item_id_match.group(1) if item_id_match else None
-            
-            if not item_id: continue
+            if not item_id:
+                continue
 
-            price_tag = s_item.select_one('.s-item__price')
-            price = price_tag.get_text(strip=True) if price_tag else "N/A"
+            # タイトル: 複数セレクターで試す
+            title = ""
+            for sel in ['.s-item__title', 'h3', '.srp-item-title', 'h2']:
+                t = elem.select_one(sel)
+                if t:
+                    title = t.get_text(strip=True)
+                    break
+            if not title:
+                title = link_tag.get('aria-label') or link_tag.get_text(strip=True) or "タイトル不明"
             
-            img_tag = s_item.select_one('.s-item__image-img img, img.s-item__image-img')
+            if "Shop on eBay" in title:
+                continue
+
+            # 価格
+            price_tag = elem.select_one('.s-item__price, [itemprop="price"]')
+            price = price_tag.get_text(strip=True) if price_tag else "N/A"
+
+            # 画像
+            img_tag = elem.select_one('img')
             image_url = ""
             if img_tag:
                 image_url = img_tag.get('data-src') or img_tag.get('src') or ""
@@ -126,11 +132,9 @@ def scrape_ebay_item_specs(item_id, browser):
         
         soup = BeautifulSoup(tab.html, 'html.parser')
         
-        # タイトルの取得
         title_tag = soup.select_one('.x-item-title__mainTitle')
         title = title_tag.get_text(strip=True) if title_tag else "不明"
         
-        # 価格の取得 (USD)
         price_tag = soup.select_one('.x-price-primary span, #prclbl')
         price_str = price_tag.get_text(strip=True) if price_tag else "0"
         price_val = re.sub(r'[^\d\.]', '', price_str)
@@ -199,7 +203,6 @@ def scrape_ebay_seller_items(seller_id, browser):
     return scrape_ebay_newest_items(url, browser)
 
 if __name__ == "__main__":
-    # テスト
     page = get_browser_page()
     test_url = "https://www.ebay.com/sch/i.html?_nkw=watch&_sop=10"
     items = scrape_ebay_newest_items(test_url, page)
