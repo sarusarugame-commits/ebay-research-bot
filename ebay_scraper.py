@@ -26,7 +26,7 @@ def get_browser_page():
         # ステルス性能向上のための追加オプション
         co.set_argument('--disable-blink-features=AutomationControlled')
         co.set_user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-        co.headless(True)
+        co.headless(False)
         page = ChromiumPage(co)
         return page
     except Exception as e:
@@ -280,7 +280,9 @@ def scrape_ebay_item_specs(item_id, browser):
             if src and src.startswith('http') and 's-l' in src:
                 high_res = re.sub(r's-l\d+', 's-l500', src)
                 if high_res not in img_urls:
-                    img_urls.append(high_res)
+                    high_res = re.sub(r's-l\d+', 's-l500', src)
+                    if high_res not in img_urls:
+                        img_urls.append(high_res)
         
         if not img_urls:
             for script_tag in soup.select('script[type="application/ld+json"]'):
