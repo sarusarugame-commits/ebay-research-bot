@@ -93,10 +93,7 @@ def scrape_ebay_newest_items(search_url, page):
             time.sleep(2)
             raw_html = page.html
             
-        # eBayはレスポンスHTML内の大部分（商品リスト等）を <!-- --> でコメントアウトして隠蔽するため、
-        # パース前に正規表現でコメントタグを削除して要素を活性化させます。
-        raw_html = re.sub(r'<!--|-->', '', raw_html)
-            
+        # [重要] HTMLの構造破壊（DOMツリーの崩れ）を防ぐため、コメント除去は絶対に行わず生のHTMLを直接パースします
         # 高速かつ堅牢な Selectolax を使用してパース
         tree = HTMLParser(raw_html)
         
@@ -155,26 +152,32 @@ def scrape_ebay_newest_items(search_url, page):
 
                 # --- タイトルの抽出 ---
                 title = ""
+                # eBayの新しいレイアウトに対応し、直接テキストを持つ要素を優先
                 title_targets = [
+                    '.s-item__title span[class*="su-styled-text"]', 
+                    '.s-card__title span[class*="su-styled-text"]',
                     '.s-item__title', '.s-card__title', 
                     '[role="heading"]', 'h3', 'h2', 'h1', 
                     '.s-item__link', 'a'
                 ]
                 for t_sel in title_targets:
-                    # css_firstで安全に最初の要素を取得
                     t_el = elem.css_first(t_sel)
                     if t_el and t_el.text(strip=True):
+                        # 不要な隠しテキスト（Opens in a new window or tab等）をDOMから削除
+                        for hidden in t_el.css('.clipped, .s-card__new-listing'):
+                            hidden.remove()
+                            
                         text = t_el.text(strip=True)
                         # "Shop on eBay" や空文字、短すぎるタイトルを除外
                         if text and "Shop on eBay" not in text and len(text) > 10:
-                            # "新規出品" などのプレフィックスを除去
+                            # 念のためプレフィックスを除去
                             title = re.sub(r'^(?:新規出品|New Listing)\s*', '', text)
                             break
                 
                 if not title:
                     continue
 
-                # --- 価格の抽出 ---
+                # --- 価格의抽出 ---
                 price = "N/A"
                 price_targets = [
                     '.s-item__price', '.s-card__price', 
@@ -193,7 +196,9 @@ def scrape_ebay_newest_items(search_url, page):
                 image_url = ""
                 img_el = elem.css_first('img')
                 if img_el:
-                    image_url = (img_el.attributes.get('data-src') or 
+                    # 新しいレイアウトの遅延読み込み画像(data-defer-load)を高画質版として優先
+                    image_url = (img_el.attributes.get('data-defer-load') or
+                                 img_el.attributes.get('data-src') or 
                                  img_el.attributes.get('src') or 
                                  img_el.attributes.get('data-original-src') or "")
 
