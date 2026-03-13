@@ -52,17 +52,43 @@ def scrape_ebay_newest_items(search_url, page):
     """
     print(f"[*] eBayアクセス開始: {search_url}", flush=True)
     try:
-        # ご指摘の通り、DrissionPageでシンプルにJS実行後の完全なHTMLを取得します
+        # 1. まずブラウザでアクセスし、Bot検知をクリア＆Cookieを取得する
         page.get(search_url)
         page.wait.load_start()
         time.sleep(3)
-        
         handle_ebay_popups(page)
         
-        # [重要] 下へのスクロールは絶対に行いません！
-        # eBayは仮想スクロールを採用しており、下にスクロールすると上部の商品がDOMから削除されてしまいます（数件しか残らない原因）。
-        # ページロード直後のDOMに全件が存在し、画像URLも data-defer-load に格納されているため、開いた直後のHTMLを一発取得します。
-        raw_html = page.html
+        # 2. 仮想スクロールによる要素消失を防ぐため、requestsで「JS実行前の生HTML」を取得する
+        import requests
+        try:
+            raw_cookies = page.cookies()
+            if isinstance(raw_cookies, list):
+                cookies = {c['name']: c['value'] for c in raw_cookies if 'name' in c and 'value' in c}
+            elif isinstance(raw_cookies, dict):
+                cookies = raw_cookies
+            else:
+                cookies = {}
+                
+            headers = {
+                "User-Agent": page.user_agent,
+                "Accept-Language": "ja,en-US;q=0.9,en;q=0.8"
+            }
+            resp = requests.get(search_url, headers=headers, cookies=cookies, timeout=15)
+            raw_html = resp.text
+            
+            if "Pardon our interruption" in raw_html or "captcha" in raw_html.lower():
+                print("[DEBUG] requestsがブロックされました。ブラウザのDOMにフォールバックします。")
+                raw_html = page.html
+            else:
+                print("[DEBUG] JS実行前の生HTMLを正常に取得しました（仮想スクロール回避）。")
+        except Exception as e:
+            print(f"[DEBUG] requests取得エラー: {e}。ブラウザのDOMを使用します。")
+            raw_html = page.html
+
+        # ★【デバッグ用】取得したHTMLをファイルに保存して中身を確認できるようにする
+        with open("debug_dump.html", "w", encoding="utf-8") as f:
+            f.write(raw_html)
+        print("[DEBUG] パーサーに渡すHTMLを 'debug_dump.html' に保存しました。")
         
         # ※HTMLコメント削除（re.sub）はDOMを破壊するので絶対に行いません
         tree = HTMLParser(raw_html)
@@ -86,7 +112,8 @@ def scrape_ebay_newest_items(search_url, page):
         extracted_items = []
         seen_ids = set()
 
-        for elem in all_elements:
+        print(f"[DEBUG] 総候補要素数: {len(all_elements)}件。抽出処理を開始します...")
+        for i, elem in enumerate(all_elements):
             item_id = "N/A"
             try:
                 item_url = ""
@@ -103,7 +130,14 @@ def scrape_ebay_newest_items(search_url, page):
                                 break
                     if item_id != "N/A": break
                 
-                if item_id == "N/A" or item_id in seen_ids or item_id.startswith('123456'):
+                if item_id == "N/A":
+                    print(f"[DEBUG] [{i}] スキップ: IDが取得できませんでした")
+                    continue
+                if item_id in seen_ids:
+                    print(f"[DEBUG] [{i}] スキップ: 重複ID ({item_id})")
+                    continue
+                if item_id.startswith('123456'):
+                    print(f"[DEBUG] [{i}] スキップ: ダミーID ({item_id})")
                     continue
 
                 title = ""
@@ -127,6 +161,7 @@ def scrape_ebay_newest_items(search_url, page):
                             break
                 
                 if not title:
+                    print(f"[DEBUG] [{i}] スキップ: タイトルが取得できません (ID: {item_id})")
                     continue
 
                 price = "N/A"
@@ -160,8 +195,10 @@ def scrape_ebay_newest_items(search_url, page):
                     'timestamp': time.time()
                 })
                 seen_ids.add(item_id)
+                print(f"[DEBUG] [{i}] 抽出成功: ID={item_id}, Title={title[:20]}..., Price={price}")
                 
-            except Exception:
+            except Exception as e:
+                print(f"[DEBUG] [{i}] スキップ: 予期せぬエラー ({e})")
                 continue
             
         print(f" -> {len(extracted_items)} 件の本物の商品を抽出しました。", flush=True)
