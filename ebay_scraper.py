@@ -2,14 +2,20 @@ from DrissionPage import ChromiumPage, ChromiumOptions
 from bs4 import BeautifulSoup
 import time
 import re
-import json
 import os
 import random
+import json
 
+# ======================================================================
+# ⚙️ 動作モード設定（True/False で切り替え）
+# ======================================================================
+# True  = クライアント仕様: 常に ebay.com(US) を使い, Ship to だけをUS/UKに切り替える（通貨はUSD）
+# False = 本来の仕様: USは ebay.com, UKは ebay.co.uk の現地サイトを使い分ける
 USE_STRICT_CLIENT_MODE = True
+# ======================================================================
 
 def get_browser_page():
-    """DrissionPageのインスタンスを生成する"""
+    """DrissionPageのインスタンスを生成する (共通設定)"""
     try:
         co = ChromiumOptions()
         co.set_argument('--no-sandbox')
@@ -25,8 +31,11 @@ def get_browser_page():
 def handle_ebay_popups(tab):
     """eBay特有のポップアップやGDPR通知を閉じる"""
     try:
+        # GDPR / Cookie 同意ボタン
         btn_gdpr = tab.ele('#gdpr-banner-accept', timeout=2)
         if btn_gdpr: btn_gdpr.click()
+        
+        # ログイン勧誘などのポップアップ
         btn_close = tab.ele('xpath://button[@aria-label="Close"]', timeout=2)
         if btn_close: btn_close.click()
     except:
@@ -40,50 +49,74 @@ def scrape_ebay_newest_items(search_url, page):
     try:
         page.get(search_url)
         page.wait.load_start()
+        # ユーザー指定の待機時間3秒
         time.sleep(3)
         handle_ebay_popups(page)
-        page.scroll.down(2000)
+        
+        # 動的読み込みを促すためにスクロール
+        page.scroll.down(3000)
         time.sleep(2)
         
-        html = page.html
+        # 複数のセレクターを統合して一括取得
+        main_selector = '.srp-results li.s-item, .s-item, li[data-viewport], .su-card-container'
+        item_elements = page.eles(main_selector)
         
-        # -------------------------------------------------------------------
-        # eBayの最新仕様: HTMLタグ（DOM）の中に直接商品が描画されず、
-        # <a href="/itm/..."> などの実体がダミー（/itm/123456...など）になるケースが頻発する。
-        # 解決策: HTMLソース全体から「/itm/12ケタ以上の数字」のURLを根こそぎ正規表現で抜き出し、
-        # 重複やダミーを排除してアイテムリストを構築する。
-        # -------------------------------------------------------------------
-        
-        url_pattern = r'(https://www\.ebay\.com/itm/\d{12,}[^\s\"\'\\]*)'
-        raw_urls = re.findall(url_pattern, html)
-        
-        unique_ids = {}
-        for u in raw_urls:
-            m = re.search(r'/itm/(\d{12,})', u)
-            if m:
-                item_id = m.group(1)
-                # ダミーIDは除外
-                if item_id in ['123456789012', '1234567890123'] or item_id.startswith('123456'):
-                    continue
-                if item_id not in unique_ids:
-                    # クエリパラメータを取り除いてユニークなURLにする
-                    clean_url = u.split('?')[0] if '?' in u else u
-                    unique_ids[item_id] = clean_url
-        
-        print(f"[DEBUG] HTML内から固有の商品IDを {len(unique_ids)} 件抽出しました。", flush=True)
+        print(f"[DEBUG] eBay商品候補を {len(item_elements)} 件検知しました。", flush=True)
 
         items = []
-        for item_id, url in unique_ids.items():
-            items.append({
-                'id': item_id,
-                'title': f"eBay Item {item_id}", # プレースホルダー（後で詳細ページで取得）
-                'price': "N/A",                  # プレースホルダー
-                'url': url,
-                'image_url': "",
-                'timestamp': time.time()
-            })
+        for elem in item_elements:
+            try:
+                # リンクを優先的に探す
+                link_tag = elem.ele('t:a', timeout=0.5)
+                if not link_tag: continue
+                
+                url = link_tag.attr('href')
+                if not url or '/itm/' not in url: continue
+                
+                m = re.search(r'/itm/(\d{12,})', url)
+                if not m: continue
+                item_id = m.group(1)
+                
+                # ダミーID除外
+                if item_id.startswith('123456'): continue
+                
+                # 重複チェック
+                if any(x['id'] == item_id for x in items): continue
+
+                # タイトル取得
+                title = ""
+                for t_sel in ['.s-item__title', 'h3', 'h2', 't:a']:
+                    t_el = elem.ele(t_sel, timeout=0.1)
+                    if t_el and t_el.text:
+                        title = t_el.text.strip()
+                        break
+                if not title: title = f"eBay Item {item_id}"
+                
+                if "Shop on eBay" in title: continue
+
+                # 価格取得
+                price = "N/A"
+                price_el = elem.ele('.s-item__price, .su-price', timeout=0.1)
+                if price_el: price = price_el.text.strip()
+
+                # 画像
+                image_url = ""
+                img_el = elem.ele('t:img', timeout=0.1)
+                if img_el:
+                    image_url = img_el.attr('data-src') or img_el.attr('src') or ""
+
+                items.append({
+                    'id': item_id,
+                    'title': title,
+                    'price': price,
+                    'url': url,
+                    'image_url': image_url,
+                    'timestamp': time.time()
+                })
+            except:
+                continue
             
-        print(f" -> {len(items)} 件の商品を抽出しました。", flush=True)
+        print(f" -> {len(items)} 件の本物の商品を抽出しました。", flush=True)
         return items
         
     except Exception as e:
@@ -140,10 +173,8 @@ def scrape_ebay_item_specs(item_id, browser):
         d_match = re.search(r'(?:Dimensions|Size|サイズ|外寸)[:：\s]*([\d\.]+\s*[x*×]\s*[\d\.]+\s*[x*×]\s*[\d\.]+\s*(?:cm|mm|in|センチ|ミリ))', spec_text, re.I)
         if d_match: specs["dimensions"] = d_match.group(1)
         
-        # 画像の取得 (複数セレクターでフォールバック)
+        # 画像取得
         img_urls = []
-        
-        # 1. フィルムストリップ / ピクチャーパネル / カルーセル
         for img in soup.select('.ux-image-filmstrip-carousel img, .picture-panel img, .ux-image-carousel-item img'):
             src = img.get('data-src') or img.get('data-zoom-src') or img.get('src') or ''
             if src and src.startswith('http') and 's-l' in src:
@@ -151,7 +182,6 @@ def scrape_ebay_item_specs(item_id, browser):
                 if high_res not in img_urls:
                     img_urls.append(high_res)
         
-        # 2. JSON-LD の image フィールド
         if not img_urls:
             for script_tag in soup.select('script[type="application/ld+json"]'):
                 try:
@@ -163,13 +193,11 @@ def scrape_ebay_item_specs(item_id, browser):
                 except:
                     pass
         
-        # 3. og:image (Open Graph)
         if not img_urls:
             og_img = soup.select_one('meta[property="og:image"]')
             if og_img and og_img.get('content'):
                 img_urls.append(og_img['content'])
         
-        # 4. 一般的なメイン画像セレクター
         if not img_urls:
             main_img = soup.select_one('.ux-image-magnifier-view img, #mainImgH0')
             if main_img:
@@ -190,15 +218,13 @@ def scrape_ebay_item_specs(item_id, browser):
             except: pass
 
 def scrape_ebay_seller_items(seller_id, browser):
-    """
-    特定セラーの出品一覧を取得する
-    """
+    """特定セラーの出品一覧を取得する"""
     url = f"https://www.ebay.com/sch/i.html?_ssn={seller_id}&_sop=10"
     return scrape_ebay_newest_items(url, browser)
 
 if __name__ == "__main__":
     page = get_browser_page()
-    test_url = "https://www.ebay.com/sch/i.html?_nkw=watch&_sop=10"
+    test_url = "https://www.ebay.com/sch/i.html?_ssn=greenepron&_sop=10"
     items = scrape_ebay_newest_items(test_url, page)
     if items:
         specs = scrape_ebay_item_specs(items[0]['id'], page)
