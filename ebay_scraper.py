@@ -138,6 +138,7 @@ def scrape_ebay_newest_items(search_url, page):
                     if t_el and t_el.text(strip=True):
                         text = t_el.text(strip=True)
                         if text and "Shop on eBay" not in text and len(text) > 10:
+                            # "新規出品" などのプレフィックスを除去
                             title = re.sub(r'^(?:新規出品|New Listing)\s*', '', text)
                             break
                 
@@ -178,6 +179,7 @@ def scrape_ebay_newest_items(search_url, page):
                 seen_ids.add(item_id)
                 
             except Exception as e:
+                # エラー原因を特定しやすくするためログを出力
                 print(f"[DEBUG] パースエラー (ID: {item_id}): {type(e).__name__}: {e}")
                 continue
             
