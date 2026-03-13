@@ -1,5 +1,5 @@
 from DrissionPage import ChromiumPage, ChromiumOptions
-from scrapling.parser import Adaptor
+from selectolax.parser import HTMLParser
 from scrapling import Fetcher
 from bs4 import BeautifulSoup
 import time
@@ -69,11 +69,10 @@ def scrape_ebay_newest_items(search_url, page):
         # eBay は商品リストの大部分を <!-- ... --> 内に隠蔽することがあるため除去
         activated_html = re.sub(r'<!--|-->', '', raw_html)
         
-        # Scrapling を使用してパース
-        adaptor = Adaptor(activated_html)
+        # 高速かつ堅牢な Selectolax を使用してパース
+        tree = HTMLParser(activated_html)
         
         # セレクタの候補をすべて取得して統合する
-        # .s-item (通常の検索), .s-card (セラーページ等), li[data-viewport] (遅延読み込み用)
         item_selectors = [
             '.srp-results li.s-item',
             'li.s-item',
@@ -85,15 +84,14 @@ def scrape_ebay_newest_items(search_url, page):
         
         all_elements = []
         for selector in item_selectors:
-            elements = adaptor.css(selector)
+            elements = tree.css(selector)
             if elements:
                 all_elements.extend(elements)
                 print(f"[DEBUG] '{selector}' セレクタで {len(elements)} 件の候補を検知しました。")
         
         if not all_elements:
             # 最終手段として全ての li 要素を走査
-            all_elements = adaptor.css('li')
-            # ページ全体から li を探す際、コメント除去後の数を報告
+            all_elements = tree.css('li')
             if len(all_elements) > 0:
                 print(f"[DEBUG] フォールバックとして全ての 'li' ({len(all_elements)} 件) を調査します。")
 
@@ -104,23 +102,18 @@ def scrape_ebay_newest_items(search_url, page):
             item_id = "N/A"
             try:
                 # --- リンクとIDの抽出 ---
-                # すべての a タグを走査して /itm/ を含むものを探す
                 item_url = ""
                 
-                # 1. 既知のリンククラスを優先
                 link_targets = ['a.s-item__link', 'a.s-card__link', 'a[href*="/itm/"]', 'a']
                 for l_sel in link_targets:
                     links = elem.css(l_sel)
                     for l in links:
-                        # Scrapling のバージョンやパーサーによって attributes か attrib かが分かれるため安全に取得
-                        attrs = getattr(l, 'attrib', getattr(l, 'attributes', {}))
-                        href = attrs.get('href', '')
+                        # Selectolaxでは辞書型で属性が取得できる
+                        href = l.attributes.get('href', '')
                         if href and '/itm/' in href:
-                            # ID抽出 (12桁以上の数字)
                             m = re.search(r'/itm/(\d{12,})', href)
                             if m:
                                 item_id = m.group(1)
-                                # クリーンなURLを作成
                                 item_url = f"https://www.ebay.com/itm/{item_id}"
                                 break
                     if item_id != "N/A": break
@@ -140,12 +133,11 @@ def scrape_ebay_newest_items(search_url, page):
                     '.s-item__link', 'a'
                 ]
                 for t_sel in title_targets:
-                    t_el = elem.css(t_sel).first()
-                    if t_el and t_el.text:
-                        text = t_el.text.strip()
-                        # "Shop on eBay" や空文字、短すぎるタイトルを除外
+                    # css_firstで安全に最初の要素を取得
+                    t_el = elem.css_first(t_sel)
+                    if t_el and t_el.text(strip=True):
+                        text = t_el.text(strip=True)
                         if text and "Shop on eBay" not in text and len(text) > 10:
-                            # "新規出品" などのプレフィックスを除去
                             title = re.sub(r'^(?:新規出品|New Listing)\s*', '', text)
                             break
                 
@@ -160,21 +152,20 @@ def scrape_ebay_newest_items(search_url, page):
                     '.s-card__primary-price', 'span[class*="price"]'
                 ]
                 for p_sel in price_targets:
-                    p_el = elem.css(p_sel).first()
-                    if p_el and p_el.text:
-                        price_text = p_el.text.strip()
+                    p_el = elem.css_first(p_sel)
+                    if p_el and p_el.text(strip=True):
+                        price_text = p_el.text(strip=True)
                         if price_text:
                             price = price_text
                             break
 
                 # --- 画像の抽出 ---
                 image_url = ""
-                img_el = elem.css('img').first()
+                img_el = elem.css_first('img')
                 if img_el:
-                    attrs = getattr(img_el, 'attrib', getattr(img_el, 'attributes', {}))
-                    image_url = (attrs.get('data-src') or 
-                                 attrs.get('src') or 
-                                 attrs.get('data-original-src') or "")
+                    image_url = (img_el.attributes.get('data-src') or 
+                                 img_el.attributes.get('src') or 
+                                 img_el.attributes.get('data-original-src') or "")
 
                 extracted_items.append({
                     'id': item_id,
@@ -187,7 +178,7 @@ def scrape_ebay_newest_items(search_url, page):
                 seen_ids.add(item_id)
                 
             except Exception as e:
-                print(f"[DEBUG] パースエラー (ID: {item_id}): {e}")
+                print(f"[DEBUG] パースエラー (ID: {item_id}): {type(e).__name__}: {e}")
                 continue
             
         print(f" -> {len(extracted_items)} 件の本物の商品を抽出しました。", flush=True)
@@ -296,3 +287,12 @@ def scrape_ebay_seller_items(seller_id, browser):
     """特定セラーの出品一覧を取得する"""
     url = f"https://www.ebay.com/sch/i.html?_ssn={seller_id}&_sop=10"
     return scrape_ebay_newest_items(url, browser)
+
+if __name__ == "__main__":
+    page = get_browser_page()
+    test_url = "https://www.ebay.com/sch/i.html?_ssn=greenepron&_sop=10"
+    items = scrape_ebay_newest_items(test_url, page)
+    if items:
+        specs = scrape_ebay_item_specs(items[0]['id'], page)
+        print(specs)
+    if page: page.quit()
