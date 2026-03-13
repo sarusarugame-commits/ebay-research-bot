@@ -17,14 +17,10 @@ def get_browser_page():
     """DrissionPageのインスタンスを生成する (共通設定)"""
     try:
         co = ChromiumOptions()
-        # プロファイルパスなどを固定したい場合はここに追加
-        # co.set_user_data_path(r'C:\Users\YourUser\AppData\Local\Google\Chrome\User Data\Default')
         co.set_argument('--no-sandbox')
         co.set_argument('--disable-gpu')
         co.set_argument('--window-size=1280,720')
-        # ヘッドレスモードで使用
         co.headless(True)
-        
         page = ChromiumPage(co)
         return page
     except Exception as e:
@@ -34,11 +30,8 @@ def get_browser_page():
 def handle_ebay_popups(tab):
     """eBay特有のポップアップやGDPR通知を閉じる"""
     try:
-        # GDPR / Cookie 同意ボタン
         btn_gdpr = tab.ele('#gdpr-banner-accept', timeout=2)
         if btn_gdpr: btn_gdpr.click()
-        
-        # ログイン勧誘などのポップアップ (閉じるボタンがあればクリック)
         btn_close = tab.ele('xpath://button[@aria-label="Close"]', timeout=2)
         if btn_close: btn_close.click()
     except:
@@ -51,50 +44,55 @@ def scrape_ebay_newest_items(search_url, page):
     print(f"[*] eBayアクセス開始: {search_url}", flush=True)
     try:
         page.get(search_url)
-        # 読み込み待機 & ポップアップ処理
         page.wait.load_start()
-        time.sleep(3) # JavaScript描画待ち
+        time.sleep(5)  # JS描画待ち（長めに確保）
         handle_ebay_popups(page)
         
-        # スクロールして全商品をロード (一部の画像はスクロールしないと現れない)
-        page.scroll.down(2000)
-        time.sleep(2)
+        page.scroll.down(3000)
+        time.sleep(3)
         
         soup = BeautifulSoup(page.html, 'html.parser')
         
-        # 商品リストの抽出 (eBay検索結果の共通構造)
-        # s-item クラスが各商品ブロック
+        # デバッグ: どの構造が存在するか確認
+        _s_item_count = len(soup.select('.s-item'))
+        _li_count = len(soup.select('ul.srp-results li'))
+        _viewport_count = len(soup.select('li[data-viewport]'))
+        print(f"[DEBUG] .s-item={_s_item_count}, ul.srp-results li={_li_count}, li[data-viewport]={_viewport_count}", flush=True)
+        
+        # 複数のセレクターを試す（eBayのHTML構造変更に対応）
+        item_elements = (
+            soup.select('.s-item') or
+            soup.select('li[data-viewport]') or
+            soup.select('ul.srp-results li.s-item') or
+            soup.select('div.s-item__wrapper')
+        )
+        
         items = []
-        for s_item in soup.select('.s-item'):
-            # 「Shop on eBay」などのダミー広告枠を除去
-            if "Shop on eBay" in s_item.get_text():
+        for s_item in item_elements:
+            text = s_item.get_text()
+            if "Shop on eBay" in text:
                 continue
             
-            # ID
-            title_tag = s_item.select_one('.s-item__title')
-            link_tag = s_item.select_one('.s-item__link')
+            title_tag = s_item.select_one('.s-item__title, h3.s-item__title')
+            link_tag = s_item.select_one('.s-item__link, a[href*="/itm/"]')
             
             if not title_tag or not link_tag:
                 continue
-            
+                
             title = title_tag.get_text(strip=True)
-            url = link_tag.get('href')
+            url = link_tag.get('href', '')
             
-            # URLから item ID を抽出
             item_id_match = re.search(r'/itm/(\d+)', url)
             item_id = item_id_match.group(1) if item_id_match else None
             
             if not item_id: continue
 
-            # 価格
             price_tag = s_item.select_one('.s-item__price')
             price = price_tag.get_text(strip=True) if price_tag else "N/A"
             
-            # 画像
-            img_tag = s_item.select_one('.s-item__image-img img')
+            img_tag = s_item.select_one('.s-item__image-img img, img.s-item__image-img')
             image_url = ""
             if img_tag:
-                # 属性 src, data-src, src-set などから最適なものを拾う
                 image_url = img_tag.get('data-src') or img_tag.get('src') or ""
             
             items.append({
@@ -103,7 +101,7 @@ def scrape_ebay_newest_items(search_url, page):
                 'price': price,
                 'url': url,
                 'image_url': image_url,
-                'timestamp': time.time() # 便宜上の取得時刻
+                'timestamp': time.time()
             })
             
         print(f" -> {len(items)} 件の商品を抽出しました。", flush=True)
@@ -112,6 +110,7 @@ def scrape_ebay_newest_items(search_url, page):
     except Exception as e:
         print(f"[!] スクレイピング失敗: {e}", flush=True)
         return []
+
 
 def scrape_ebay_item_specs(item_id, browser):
     """eBay詳細からスペック抽出"""
@@ -122,12 +121,9 @@ def scrape_ebay_item_specs(item_id, browser):
         tab = browser.new_tab(url)
         tab.get(url, timeout=15)
         handle_ebay_popups(tab)
-        
-        # 読み込み待機
         tab.wait.load_start()
         time.sleep(2)
         
-        # 商品情報の抽出
         soup = BeautifulSoup(tab.html, 'html.parser')
         
         # タイトルの取得
@@ -143,18 +139,16 @@ def scrape_ebay_item_specs(item_id, browser):
         specs = {
             "title": title,
             "price_usd": price_usd,
-            "weight": "不明", 
-            "dimensions": "不明", 
+            "weight": "不明",
+            "dimensions": "不明",
             "img_urls": []
         }
         
-        # スペック表 (Item Specifics) を解析
         spec_text = ""
         spec_section = soup.select_one('.ux-layout-section--item-specifics, .item-specifics')
         if spec_section:
             spec_text += spec_section.get_text(" ", strip=True)
             
-        # 商品説明 (iframe内) を解析
         desc_frame = tab.ele('#desc_ifr', timeout=2)
         if desc_frame:
             try:
@@ -164,15 +158,12 @@ def scrape_ebay_item_specs(item_id, browser):
             except:
                 pass
         
-        # 重力と重量のキーワードで正規表現抽出
         w_match = re.search(r'(?:Weight|Mass|重量)[:：\s]*([\d\.]+\s*(?:kg|g|lb|oz|キロ|グラム))', spec_text, re.I)
         if w_match: specs["weight"] = w_match.group(1)
         
-        # 寸法
         d_match = re.search(r'(?:Dimensions|Size|サイズ|外寸)[:：\s]*([\d\.]+\s*[x*×]\s*[\d\.]+\s*[x*×]\s*[\d\.]+\s*(?:cm|mm|in|センチ|ミリ))', spec_text, re.I)
         if d_match: specs["dimensions"] = d_match.group(1)
         
-        # 追加画像URLの抽出
         img_urls = []
         for img in soup.select('.ux-image-filmstrip-carousel img, .picture-panel img'):
             src = img.get('data-src') or img.get('src')
@@ -194,7 +185,7 @@ def scrape_ebay_item_specs(item_id, browser):
         return specs
     except Exception as e:
         print(f"[!] 詳細パース失敗: {e}", flush=True)
-        return {"weight": "不明", "dimensions": "不明", "img_urls": []}
+        return {"title": "不明", "price_usd": 0.0, "weight": "不明", "dimensions": "不明", "img_urls": []}
     finally:
         if tab:
             try: tab.close()
