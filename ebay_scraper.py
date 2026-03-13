@@ -47,48 +47,80 @@ def handle_ebay_popups(tab):
         pass
 
 def set_ship_to_uk(page):
-    """eBayの配送先(Ship To)をUK(イギリス)に設定する"""
+    """eBayの配送先(Ship To)をUK(イギリス)に設定する強化版"""
     try:
-        # 現在の設定をチェック (日本語UI "お届け先: 日本" 等にも対応)
+        # 1. 配送先ボタンの特定
         ship_btn = page.ele('.srp-controls--shipping-location button, .srp-shipping-location__flyout button, #gh-shipto-click', timeout=3)
         if not ship_btn:
-            # ヘッダー側のボタンも試す
-            ship_btn = page.ele('xpath://button[contains(@aria-label, "Ship to") or contains(@aria-label, "お届け先")]', timeout=2)
+            ship_btn = page.ele('xpath://button[contains(@aria-label, "Ship to") or contains(@aria-label, "お届け先")]', timeout=2) or \
+                       page.ele('#gh-eb-u', timeout=1) # ヘッダー右上の配送先表示エリア
 
-        if ship_btn:
-            current_text = ship_btn.text
-            if any(x in current_text for x in ['UK', 'GB', 'United Kingdom', 'イギリス', 'E1']):
-                print("[*] Ship To は既に UK に設定されています。")
-                return
-            
-            print(f"[*] Ship To を UK に変更しています... (現在: {current_text})")
-            ship_btn.click()
-            time.sleep(1.5)
-            
-            # 国選択ドロップダウン
-            country_sel = page.ele('xpath://select[contains(@id, "select") or contains(@aria-label, "Country") or contains(@aria-label, "国")]')
-            if country_sel:
-                try:
-                    country_sel.select.by_text('United Kingdom - GBR')
-                except:
-                    # 日本語UIの場合などを考慮
-                    country_sel.select.by_index(2) # 大抵上の方にあるはずだが、安全策としてテキスト優先
-                    
-                time.sleep(1)
-                
-            # 完了(Done/Go)ボタンをクリック (郵便番号入力はスキップ)
-            go_btn = page.ele('xpath://button[text()="Done" or text()="完了"]', timeout=2) or \
-                     page.ele('xpath://input[@type="submit" and (@value="Go" or @value="完了")]', timeout=2)
-            
+        if not ship_btn:
+            print("[DEBUG] 配送先設定ボタンが見つかりませんでした。")
+            return
+
+        current_text = ship_btn.text
+        if any(x in current_text for x in ['UK', 'GB', 'United Kingdom', 'イギリス', 'E1']):
+            print(f"[*] Ship To は既に UK に設定されています。 (表示: {current_text})")
+            return
+        
+        print(f"[*] Ship To を UK に変更開始 (現在: {current_text})")
+        ship_btn.click()
+        time.sleep(2)
+        
+        # 2. 国選択ドロップダウンの特定と選択
+        # セレクタをさらに強化
+        country_sel = page.ele('xpath://select[contains(@id, "country") or contains(@id, "shipto") or contains(@aria-label, "Country") or contains(@aria-label, "国")]')
+        if not country_sel:
+            print("[DEBUG] 国選択ドロップダウンが見つかりません。")
+        else:
+            print("[DEBUG] 国を UK に設定中...")
+            try:
+                # 複数の方法で試行
+                if not country_sel.select.by_text('United Kingdom - GBR'):
+                    if not country_sel.select.by_value('GB'):
+                        country_sel.select.by_index(2) # 大抵上の方
+            except Exception as e:
+                print(f"[DEBUG] 国選択エラー: {e}")
+            time.sleep(1)
+
+        # 3. 郵便番号入力 (もし表示されていれば入力したほうが確実な場合があるため復活)
+        zip_input = page.ele('xpath://input[contains(@id, "zip") or @aria-label="Zip code" or @autocomplete="postal-code"]', timeout=1)
+        if zip_input:
+            print("[DEBUG] 郵便番号を入力します...")
+            zip_input.clear()
+            zip_input.input('E1 6AN')
+            time.sleep(1)
+
+        # 4. 完了/確定ボタンのクリック
+        # いくつかのパターンを順番に試す
+        done_selectors = [
+            'xpath://button[text()="Done" or text()="完了" or text()="Apply" or text()="適用"]',
+            'xpath://input[@type="submit" and (@value="Go" or @value="完了")]',
+            '#shipto-confirm-submit',
+            '.shipto__confirm'
+        ]
+        
+        done_clicked = False
+        for sel in done_selectors:
+            go_btn = page.ele(sel, timeout=1)
             if go_btn:
+                print(f"[DEBUG] 確定ボタンが見つかりました ({sel})。クリックします。")
                 go_btn.click()
-                page.wait.load_start()
-                time.sleep(3)
-                print("[*] Ship To を UK に変更しました。")
-            else:
-                print("[DEBUG] 完了ボタンが見つかりませんでした。")
+                done_clicked = True
+                break
+        
+        if done_clicked:
+            page.wait.load_start()
+            time.sleep(4)
+            print("[*] 配送先変更処理を完了しました。ページ更新を待機しました。")
+        else:
+            print("[DEBUG] 確定ボタン（Done/Go）が見つかりませんでした。")
+
     except Exception as e:
-        print(f"[DEBUG] Ship To の変更処理中にエラーが発生しました: {e}")
+        print(f"[DEBUG] Ship To 変更中の致命的エラー: {e}")
+        import traceback
+        traceback.print_exc()
 
 def scrape_ebay_newest_items(search_url, page):
     """
@@ -117,7 +149,7 @@ def scrape_ebay_newest_items(search_url, page):
             
         # ⚠️ 【重要】前回の抽出漏れの真の原因 ⚠️
         # 先ほどの debug_dump.html を解析した結果、実はShipToは既にUKになっており、HTML内には【60件分の全データ】が存在していました。
-        # にもかかわらず3件しか取れなかったのは、Python標準の `BeautifulSoup(html.parser)` が、eBayの巨大で複雑なHTMLの解析に耐えきれず、
+        # にもかかわらず3件しか取れなかったのは、Python標準の `BeautifulSoup(html.parser)` が, eBayの巨大で複雑なHTMLの解析に耐えきれず、
         # 途中でパースを強制終了してしまっていたためです（そのため3件しか見えなかった）。
         # そこで、最も寛容で強力なパーサーである `selectolax` に戻すことで、隠れていた60件すべてを一気に引き出します！
         
