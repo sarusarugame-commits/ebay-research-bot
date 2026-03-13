@@ -62,9 +62,9 @@ GREEN = "\033[92m"
 RESET_GREEN = "\033[0m"
 
 def get_fresh_browser():
-    """並列処理用に新しいポートでブラウザを起動する"""
+    """ツール専用プロファイルを使用してブラウザを起動する"""
     co = ChromiumOptions()
-    co.auto_port()
+    co.set_user_data_path('./chrome_profile')
     co.headless(False)
     co.set_argument("--window-size=1280,720")
     return ChromiumPage(co)

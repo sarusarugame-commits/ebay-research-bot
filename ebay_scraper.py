@@ -23,6 +23,8 @@ def get_browser_page():
         co.set_argument('--no-sandbox')
         co.set_argument('--disable-gpu')
         co.set_argument('--window-size=1280,720')
+        # ツール専用のプロファイル（クッキー保存用）を使用
+        co.set_user_data_path('./chrome_profile')
         # ステルス性能向上のための追加オプション
         co.set_argument('--disable-blink-features=AutomationControlled')
         co.set_user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
