@@ -55,14 +55,13 @@ def scrape_ebay_newest_items(search_url, page):
         # ご指摘の通り、DrissionPageでシンプルにJS実行後の完全なHTMLを取得します
         page.get(search_url)
         page.wait.load_start()
-        
-        # 軽く下までスクロールして遅延読み込み画像(data-defer-load等)をトリガーし、待機します
-        page.scroll.to_bottom()
-        time.sleep(5)
+        time.sleep(3)
         
         handle_ebay_popups(page)
         
-        # 開発者ツールと同じ、完成されたDOMを一発取得
+        # [重要] 下へのスクロールは絶対に行いません！
+        # eBayは仮想スクロールを採用しており、下にスクロールすると上部の商品がDOMから削除されてしまいます（数件しか残らない原因）。
+        # ページロード直後のDOMに全件が存在し、画像URLも data-defer-load に格納されているため、開いた直後のHTMLを一発取得します。
         raw_html = page.html
         
         # ※HTMLコメント削除（re.sub）はDOMを破壊するので絶対に行いません
