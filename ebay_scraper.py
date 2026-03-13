@@ -50,21 +50,23 @@ def set_ship_to_uk(page):
     """eBayの配送先(Ship To)をUK(イギリス)に設定する強化版"""
     try:
         # 1. 配送先ボタンの特定
-        ship_btn = page.ele('.srp-controls--shipping-location button, .srp-shipping-location__flyout button, #gh-shipto-click', timeout=3)
-        if not ship_btn:
-            ship_btn = page.ele('xpath://button[contains(@aria-label, "Ship to") or contains(@aria-label, "お届け先")]', timeout=2) or \
-                       page.ele('#gh-eb-u', timeout=1) # ヘッダー右上の配送先表示エリア
+        # ブラウザ調査の結果、最も確実なのは button.gh-ship-to__menu です
+        ship_btn = page.ele('css:button.gh-ship-to__menu', timeout=3) or \
+                   page.ele('xpath://button[contains(@class, "gh-ship-to__menu") or contains(@aria-label, "お届け先") or contains(@aria-label, "Ship to")]', timeout=2) or \
+                   page.ele('css:.srp-controls--shipping-location button, .srp-shipping-location__flyout button', timeout=2)
 
         if not ship_btn:
             print("[DEBUG] 配送先設定ボタンが見つかりませんでした。")
             return
 
-        current_text = ship_btn.text
-        if any(x in current_text for x in ['UK', 'GB', 'United Kingdom', 'イギリス', 'E1']):
-            print(f"[*] Ship To は既に UK に設定されています。 (表示: {current_text})")
+        current_text = ship_btn.text or ship_btn.attr('aria-label') or ""
+        print(f"[*] 現在の配送先表示: {current_text}")
+        
+        if any(x in current_text for x in ['UK', 'GB', 'United Kingdom', 'イギリス', 'England']):
+            print("[*] Ship To は既に UK に設定されています。")
             return
         
-        print(f"[*] Ship To を UK に変更開始 (現在: {current_text})")
+        print(f"[*] Ship To を UK に変更開始 (ターゲットボタンを検知)")
         ship_btn.click()
         time.sleep(2)
         
@@ -149,7 +151,7 @@ def scrape_ebay_newest_items(search_url, page):
             
         # ⚠️ 【重要】前回の抽出漏れの真の原因 ⚠️
         # 先ほどの debug_dump.html を解析した結果、実はShipToは既にUKになっており、HTML内には【60件分の全データ】が存在していました。
-        # にもかかわらず3件しか取れなかったのは、Python標準の `BeautifulSoup(html.parser)` が, eBayの巨大で複雑なHTMLの解析に耐えきれず、
+        # にもかかわらず3件しか取れ難かったのは、Python標準の `BeautifulSoup(html.parser)` が、eBayの巨大で複雑なHTMLの解析に耐えきれず、
         # 途中でパースを強制終了してしまっていたためです（そのため3件しか見えなかった）。
         # そこで、最も寛容で強力なパーサーである `selectolax` に戻すことで、隠れていた60件すべてを一気に引き出します！
         
