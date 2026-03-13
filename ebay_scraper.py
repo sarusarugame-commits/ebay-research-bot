@@ -1,5 +1,5 @@
 from DrissionPage import ChromiumPage, ChromiumOptions
-from bs4 import BeautifulSoup
+from scrapling.parser import Adaptor
 import time
 import re
 import os
@@ -21,6 +21,9 @@ def get_browser_page():
         co.set_argument('--no-sandbox')
         co.set_argument('--disable-gpu')
         co.set_argument('--window-size=1280,720')
+        # ステルス性能向上のための追加オプション
+        co.set_argument('--disable-blink-features=AutomationControlled')
+        co.set_user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
         co.headless(True)
         page = ChromiumPage(co)
         return page
@@ -48,64 +51,91 @@ def scrape_ebay_newest_items(search_url, page):
     print(f"[*] eBayアクセス開始: {search_url}", flush=True)
     try:
         page.get(search_url)
+        # ページ読み込み完了を待機
         page.wait.load_start()
-        # ユーザー指定の待機時間3秒
         time.sleep(3)
         handle_ebay_popups(page)
         
         # 動的読み込みを促すためにスクロール
-        page.scroll.down(3000)
+        page.scroll.down(4000)
         time.sleep(2)
         
-        # 複数のセレクターを統合して一括取得
-        main_selector = '.srp-results li.s-item, .s-item, li[data-viewport], .su-card-container'
-        item_elements = page.eles(main_selector)
+        # Scrapling を使用してパース
+        adaptor = Adaptor(page.html)
         
-        print(f"[DEBUG] eBay商品候補を {len(item_elements)} 件検知しました。", flush=True)
+        # 複数のコンテナセレクタ（s-item, srp-results内のli, および新しい s-card）に対応
+        # セレクタを OR 条件で指定
+        item_selectors = [
+            '.srp-results li.s-item',
+            'li.s-item',
+            '.s-card-container',
+            '.s-card',
+            'li[data-viewport]'
+        ]
+        
+        items_found = []
+        for selector in item_selectors:
+            elements = adaptor.css(selector)
+            if elements:
+                items_found = elements
+                print(f"[DEBUG] '{selector}' セレクタで {len(elements)} 件の商品を検知しました。")
+                break
+        
+        if not items_found:
+            # 最終手段として全ての li 要素を走査（より広い網）
+            items_found = adaptor.css('li')
+            print(f"[DEBUG] フォールバックとして全ての 'li' ({len(items_found)} 件) を調査します。")
 
-        items = []
-        for elem in item_elements:
+        extracted_items = []
+        for elem in items_found:
             try:
-                # リンクを優先的に探す
-                link_tag = elem.ele('t:a', timeout=0.5)
-                if not link_tag: continue
+                # リンクの抽出（URLから商品IDを特定）
+                link_el = elem.css('a[href*="/itm/"]').first()
+                if not link_el:
+                    continue
                 
-                url = link_tag.attr('href')
-                if not url or '/itm/' not in url: continue
+                url = link_el.attributes.get('href', '')
+                if not url:
+                    continue
                 
+                # 商品ID (12桁) 抽出
                 m = re.search(r'/itm/(\d{12,})', url)
-                if not m: continue
+                if not m:
+                    continue
                 item_id = m.group(1)
                 
-                # ダミーID除外
-                if item_id.startswith('123456'): continue
-                
                 # 重複チェック
-                if any(x['id'] == item_id for x in items): continue
+                if any(x['id'] == item_id for x in extracted_items):
+                    continue
 
-                # タイトル取得
+                # タイトルの抽出（複数の可能性を試行）
                 title = ""
-                for t_sel in ['.s-item__title', 'h3', 'h2', 't:a']:
-                    t_el = elem.ele(t_sel, timeout=0.1)
+                title_targets = ['.s-item__title', '.s-card__title', 'h3', 'h2', 'span[role="heading"]']
+                for t_sel in title_targets:
+                    t_el = elem.css(t_sel).first()
                     if t_el and t_el.text:
                         title = t_el.text.strip()
                         break
-                if not title: title = f"eBay Item {item_id}"
                 
-                if "Shop on eBay" in title: continue
+                if not title or "Shop on eBay" in title:
+                    continue
 
-                # 価格取得
+                # 価格の抽出
                 price = "N/A"
-                price_el = elem.ele('.s-item__price, .su-price', timeout=0.1)
-                if price_el: price = price_el.text.strip()
+                price_targets = ['.s-item__price', '.s-card__price', '.su-price', '.s-item__primary-price']
+                for p_sel in price_targets:
+                    p_el = elem.css(p_sel).first()
+                    if p_el and p_el.text:
+                        price = p_el.text.strip()
+                        break
 
-                # 画像
+                # 画像の抽出
                 image_url = ""
-                img_el = elem.ele('t:img', timeout=0.1)
+                img_el = elem.css('img').first()
                 if img_el:
-                    image_url = img_el.attr('data-src') or img_el.attr('src') or ""
+                    image_url = img_el.attributes.get('data-src') or img_el.attributes.get('src') or ""
 
-                items.append({
+                extracted_items.append({
                     'id': item_id,
                     'title': title,
                     'price': price,
@@ -113,11 +143,11 @@ def scrape_ebay_newest_items(search_url, page):
                     'image_url': image_url,
                     'timestamp': time.time()
                 })
-            except:
+            except Exception:
                 continue
             
-        print(f" -> {len(items)} 件の本物の商品を抽出しました。", flush=True)
-        return items
+        print(f" -> {len(extracted_items)} 件の本物の商品を抽出しました。", flush=True)
+        return extracted_items
         
     except Exception as e:
         print(f"[!] スクレイピング失敗: {e}", flush=True)
@@ -125,6 +155,7 @@ def scrape_ebay_newest_items(search_url, page):
 
 def scrape_ebay_item_specs(item_id, browser):
     """eBay詳細からスペック抽出"""
+    from bs4 import BeautifulSoup
     url = f"https://www.ebay.com/itm/{item_id}"
     print(f"[*] eBay詳細読込中: {item_id}...", flush=True)
     tab = None
@@ -221,12 +252,3 @@ def scrape_ebay_seller_items(seller_id, browser):
     """特定セラーの出品一覧を取得する"""
     url = f"https://www.ebay.com/sch/i.html?_ssn={seller_id}&_sop=10"
     return scrape_ebay_newest_items(url, browser)
-
-if __name__ == "__main__":
-    page = get_browser_page()
-    test_url = "https://www.ebay.com/sch/i.html?_ssn=greenepron&_sop=10"
-    items = scrape_ebay_newest_items(test_url, page)
-    if items:
-        specs = scrape_ebay_item_specs(items[0]['id'], page)
-        print(specs)
-    if page: page.quit()
