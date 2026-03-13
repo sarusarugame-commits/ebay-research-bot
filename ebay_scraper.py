@@ -52,21 +52,25 @@ def scrape_ebay_newest_items(search_url, page):
     """
     print(f"[*] eBayアクセス開始: {search_url}", flush=True)
     try:
-        # DrissionPage ではなくボット検知に強い Scrapling Fetcher を使用して取得
-        fetcher = Fetcher()
-        response = fetcher.get(search_url)
+        # DrissionPage によるページ取得
+        page.get(search_url)
+        page.wait.load_start()
+        time.sleep(3)
+        handle_ebay_popups(page)
         
-        if response.status != 200:
-            print(f"[!] eBay取得エラー (Status {response.status})")
-            return []
-            
-        html = response.text
-        if "Pardon our interruption" in html or "captcha" in html.lower():
-            print("[!] eBayのボット検知によりブロックされました。")
-            return []
-
+        # 動的部分の読み込みを促す
+        page.scroll.down(5000)
+        time.sleep(2)
+        
+        # HTML 取得
+        raw_html = page.html
+        
+        # --- 重要: HTML コメントを除去して隠れたコンテンツを活性化 ---
+        # eBay は商品リストの大部分を <!-- ... --> 内に隠蔽することがあるため除去
+        activated_html = re.sub(r'<!--|-->', '', raw_html)
+        
         # Scrapling を使用してパース
-        adaptor = Adaptor(html)
+        adaptor = Adaptor(activated_html)
         
         # セレクタの候補をすべて取得して統合する
         # .s-item (通常の検索), .s-card (セラーページ等), li[data-viewport] (遅延読み込み用)
@@ -89,24 +93,28 @@ def scrape_ebay_newest_items(search_url, page):
         if not all_elements:
             # 最終手段として全ての li 要素を走査
             all_elements = adaptor.css('li')
-            print(f"[DEBUG] フォールバックとして全ての 'li' ({len(all_elements)} 件) を調査します。")
+            # ページ全体から li を探す際、コメント除去後の数を報告
+            if len(all_elements) > 0:
+                print(f"[DEBUG] フォールバックとして全ての 'li' ({len(all_elements)} 件) を調査します。")
 
         extracted_items = []
         seen_ids = set()
 
         for elem in all_elements:
+            item_id = "N/A"
             try:
                 # --- リンクとIDの抽出 ---
-                # すべての a タグを走査して /itm/ を含むものを探す（より広範に）
+                # すべての a タグを走査して /itm/ を含むものを探す
                 item_url = ""
-                item_id = ""
                 
                 # 1. 既知のリンククラスを優先
                 link_targets = ['a.s-item__link', 'a.s-card__link', 'a[href*="/itm/"]', 'a']
                 for l_sel in link_targets:
                     links = elem.css(l_sel)
                     for l in links:
-                        href = l.attributes.get('href', '')
+                        # Scrapling のバージョンやパーサーによって attributes か attrib かが分かれるため安全に取得
+                        attrs = getattr(l, 'attrib', getattr(l, 'attributes', {}))
+                        href = attrs.get('href', '')
                         if href and '/itm/' in href:
                             # ID抽出 (12桁以上の数字)
                             m = re.search(r'/itm/(\d{12,})', href)
@@ -115,9 +123,9 @@ def scrape_ebay_newest_items(search_url, page):
                                 # クリーンなURLを作成
                                 item_url = f"https://www.ebay.com/itm/{item_id}"
                                 break
-                    if item_id: break
+                    if item_id != "N/A": break
                 
-                if not item_id or item_id in seen_ids:
+                if item_id == "N/A" or item_id in seen_ids:
                     continue
                 
                 # ダミーID除外
@@ -137,12 +145,11 @@ def scrape_ebay_newest_items(search_url, page):
                         text = t_el.text.strip()
                         # "Shop on eBay" や空文字、短すぎるタイトルを除外
                         if text and "Shop on eBay" not in text and len(text) > 10:
-                            # "新規出品" などのプレフィックスを除去（必要に応じて）
+                            # "新規出品" などのプレフィックスを除去
                             title = re.sub(r'^(?:新規出品|New Listing)\s*', '', text)
                             break
                 
                 if not title:
-                    # タイトルが見つからない場合はスキップ
                     continue
 
                 # --- 価格の抽出 ---
@@ -164,9 +171,10 @@ def scrape_ebay_newest_items(search_url, page):
                 image_url = ""
                 img_el = elem.css('img').first()
                 if img_el:
-                    image_url = (img_el.attributes.get('data-src') or 
-                                 img_el.attributes.get('src') or 
-                                 img_el.attributes.get('data-original-src') or "")
+                    attrs = getattr(img_el, 'attrib', getattr(img_el, 'attributes', {}))
+                    image_url = (attrs.get('data-src') or 
+                                 attrs.get('src') or 
+                                 attrs.get('data-original-src') or "")
 
                 extracted_items.append({
                     'id': item_id,
@@ -179,7 +187,7 @@ def scrape_ebay_newest_items(search_url, page):
                 seen_ids.add(item_id)
                 
             except Exception as e:
-                # 個別要素のパース失敗は無視して続行
+                print(f"[DEBUG] パースエラー (ID: {item_id}): {e}")
                 continue
             
         print(f" -> {len(extracted_items)} 件の本物の商品を抽出しました。", flush=True)
