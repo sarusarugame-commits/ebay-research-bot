@@ -93,6 +93,10 @@ def scrape_ebay_newest_items(search_url, page):
             time.sleep(2)
             raw_html = page.html
             
+        # eBayはレスポンスHTML内の大部分（商品リスト等）を <!-- --> でコメントアウトして隠蔽するため、
+        # パース前に正規表現でコメントタグを削除して要素を活性化させます。
+        raw_html = re.sub(r'<!--|-->', '', raw_html)
+            
         # 高速かつ堅牢な Selectolax を使用してパース
         tree = HTMLParser(raw_html)
         
@@ -161,6 +165,7 @@ def scrape_ebay_newest_items(search_url, page):
                     t_el = elem.css_first(t_sel)
                     if t_el and t_el.text(strip=True):
                         text = t_el.text(strip=True)
+                        # "Shop on eBay" や空文字、短すぎるタイトルを除外
                         if text and "Shop on eBay" not in text and len(text) > 10:
                             # "新規出品" などのプレフィックスを除去
                             title = re.sub(r'^(?:新規出品|New Listing)\s*', '', text)
