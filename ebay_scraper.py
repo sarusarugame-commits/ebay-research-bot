@@ -58,38 +58,35 @@ def scrape_ebay_newest_items(search_url, page):
         time.sleep(3)
         handle_ebay_popups(page)
         
-        # 動的部分の読み込みを促す
-        page.scroll.down(5000)
-        time.sleep(2)
-        
-        # --- 重要: JavaScript で HTML コメント内の商品を活性化 ---
-        # DrissionPageの page.html で取得すると、コメント内がエスケープされてパースできないため、
-        # DOM上で直接コメントノードを検知し、実体化（活性化）させてからHTMLを取得します。
-        js_code = """
-        let iterator = document.createNodeIterator(document.body, NodeFilter.SHOW_COMMENT, null, false);
-        let node;
-        let count = 0;
-        while (node = iterator.nextNode()) {
-            if (node.nodeValue.includes('s-item') || node.nodeValue.includes('s-card')) {
-                let tempDiv = document.createElement('div');
-                tempDiv.innerHTML = node.nodeValue;
-                node.parentNode.insertBefore(tempDiv, node);
-                count++;
-            }
-        }
-        return count;
-        """
+        # --- 重要: JS Hydration（仮想スクロール）によるDOM要素の消失を防ぐ ---
+        # eBayはブラウザでJSが実行されると、画面外の商品をDOMから削除してしまいます（数件だけになる原因）。
+        # これを回避するため、Bot検知をクリアしたブラウザのCookieを使って、JS実行前の生HTMLを取得します。
+        import requests
         try:
-            activated_count = page.run_js(js_code)
-            print(f"[DEBUG] JSにより {activated_count} 個のコメントブロックをDOM上に展開しました。")
+            cookies = page.cookies(as_dict=True)
+            headers = {
+                "User-Agent": page.user_agent,
+                "Accept-Language": "ja,en-US;q=0.9,en;q=0.8"
+            }
+            resp = requests.get(search_url, headers=headers, cookies=cookies, timeout=15)
+            raw_html = resp.text
+            
+            # もし requests が弾かれた場合はブラウザのHTMLにフォールバック
+            if "Pardon our interruption" in raw_html or "captcha" in raw_html.lower():
+                print("[DEBUG] requestsによる取得がブロックされました。ブラウザのDOMにフォールバックします。")
+                page.scroll.down(5000)
+                time.sleep(2)
+                raw_html = page.html
+            else:
+                print("[DEBUG] JS実行前の生HTMLを正常に取得しました（仮想スクロール回避）。")
         except Exception as e:
-            print(f"[DEBUG] JS展開中にエラー: {e}")
-        
-        # 展開後の HTML を取得
-        activated_html = page.html
-        
+            print(f"[DEBUG] 生HTML取得エラー ({e})。ブラウザのDOMにフォールバックします。")
+            page.scroll.down(5000)
+            time.sleep(2)
+            raw_html = page.html
+            
         # 高速かつ堅牢な Selectolax を使用してパース
-        tree = HTMLParser(activated_html)
+        tree = HTMLParser(raw_html)
         
         # セレクタの候補をすべて取得して統合する
         item_selectors = [
