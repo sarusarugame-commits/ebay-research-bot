@@ -52,50 +52,22 @@ def scrape_ebay_newest_items(search_url, page):
     """
     print(f"[*] eBayアクセス開始: {search_url}", flush=True)
     try:
-        # DrissionPage によるページ取得
+        # ご指摘の通り、DrissionPageでシンプルにJS実行後の完全なHTMLを取得します
         page.get(search_url)
         page.wait.load_start()
-        time.sleep(3)
+        
+        # 軽く下までスクロールして遅延読み込み画像(data-defer-load等)をトリガーし、待機します
+        page.scroll.to_bottom()
+        time.sleep(5)
+        
         handle_ebay_popups(page)
         
-        # --- 重要: 仮想スクロール（JS Hydration）対策 ---
-        # ブラウザのDOMでは画面外の商品が消えるため、CookieとUAを引き継いでrequestsで「生HTML」を直接一括取得します。
-        # ※HTMLコメントの削除(re.sub)はDOMツリーを破壊するため絶対に行いません。
-        import requests
-        try:
-            raw_cookies = page.cookies()
-            if isinstance(raw_cookies, list):
-                cookies = {c['name']: c['value'] for c in raw_cookies if 'name' in c and 'value' in c}
-            elif isinstance(raw_cookies, dict):
-                cookies = raw_cookies
-            else:
-                cookies = {}
-                
-            headers = {
-                "User-Agent": page.user_agent,
-                "Accept-Language": "ja,en-US;q=0.9,en;q=0.8"
-            }
-            resp = requests.get(search_url, headers=headers, cookies=cookies, timeout=15)
-            raw_html = resp.text
-            
-            if "Pardon our interruption" in raw_html or "captcha" in raw_html.lower():
-                print("[DEBUG] requestsによる取得がブロックされました。ブラウザのDOMにフォールバックします。")
-                page.scroll.down(5000)
-                time.sleep(2)
-                raw_html = page.html
-            else:
-                print("[DEBUG] JS実行前の生HTMLを正常に一括取得しました（仮想スクロール回避）。")
-        except Exception as e:
-            print(f"[DEBUG] 生HTML取得エラー ({e})。ブラウザのDOMにフォールバックします。")
-            page.scroll.down(5000)
-            time.sleep(2)
-            raw_html = page.html
-            
+        # 開発者ツールと同じ、完成されたDOMを一発取得
+        raw_html = page.html
+        
+        # ※HTMLコメント削除（re.sub）はDOMを破壊するので絶対に行いません
         tree = HTMLParser(raw_html)
         
-        extracted_items = []
-        seen_ids = set()
-
         item_selectors = [
             '.srp-results li.s-item',
             'li.s-item',
@@ -111,11 +83,9 @@ def scrape_ebay_newest_items(search_url, page):
             if elements:
                 all_elements.extend(elements)
                 print(f"[DEBUG] '{selector}' セレクタで {len(elements)} 件の候補を検知しました。")
-        
-        if not all_elements:
-            all_elements = tree.css('li')
-            if len(all_elements) > 0:
-                print(f"[DEBUG] フォールバックとして全ての 'li' ({len(all_elements)} 件) を調査します。")
+                
+        extracted_items = []
+        seen_ids = set()
 
         for elem in all_elements:
             item_id = "N/A"
@@ -134,13 +104,11 @@ def scrape_ebay_newest_items(search_url, page):
                                 break
                     if item_id != "N/A": break
                 
-                if item_id == "N/A" or item_id in seen_ids:
-                    continue
-                
-                if item_id.startswith('123456'):
+                if item_id == "N/A" or item_id in seen_ids or item_id.startswith('123456'):
                     continue
 
                 title = ""
+                # eBayの新しいレイアウトに対応
                 title_targets = [
                     '.s-item__title span[class*="su-styled-text"]', 
                     '.s-card__title span[class*="su-styled-text"]',
@@ -151,10 +119,9 @@ def scrape_ebay_newest_items(search_url, page):
                 for t_sel in title_targets:
                     t_el = elem.css_first(t_sel)
                     if t_el and t_el.text(strip=True):
-                        # 隠しテキストを削除
+                        # 隠しテキスト（Opens in a new window 等）を削除
                         for hidden in t_el.css('.clipped, .s-card__new-listing'):
                             hidden.remove()
-                            
                         text = t_el.text(strip=True)
                         if text and "Shop on eBay" not in text and len(text) > 10:
                             title = re.sub(r'^(?:新規出品|New Listing)\s*', '', text)
@@ -195,7 +162,7 @@ def scrape_ebay_newest_items(search_url, page):
                 })
                 seen_ids.add(item_id)
                 
-            except Exception as e:
+            except Exception:
                 continue
             
         print(f" -> {len(extracted_items)} 件の本物の商品を抽出しました。", flush=True)
