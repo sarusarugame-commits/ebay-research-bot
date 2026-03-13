@@ -65,7 +65,7 @@ def get_fresh_browser():
     """並列処理用に新しいポートでブラウザを起動する"""
     co = ChromiumOptions()
     co.auto_port()
-    co.headless(True)
+    co.headless(False)
     co.set_argument("--window-size=1280,720")
     return ChromiumPage(co)
 
@@ -98,6 +98,7 @@ def main():
     print("="*60)
     
     database.setup_db()
+    
     last_url = ""
     
     while True:
