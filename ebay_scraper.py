@@ -130,13 +130,7 @@ def scrape_ebay_newest_items(search_url, page):
     """
     指定されたURLから eBay の新着商品をスクレイピングする
     """
-    # ユーザーのご指示通り、URLにUK地域指定パラメータを注入して regional context を強化します
-    if 'LH_PrefLoc=1' not in search_url:
-        search_url += ('&' if '?' in search_url else '?') + 'LH_PrefLoc=1'
-    if '_udhi=UK' not in search_url:
-        search_url += '&_udhi=UK'
-
-    print(f"[*] eBayアクセス開始 (UK指定付): {search_url}", flush=True)
+    print(f"[*] eBayアクセス開始: {search_url}", flush=True)
     try:
         # DrissionPage によるページ取得
         page.get(search_url)
@@ -144,9 +138,7 @@ def scrape_ebay_newest_items(search_url, page):
         time.sleep(3)
         handle_ebay_popups(page)
         
-        # ユーザーのご指示通り、ShipTo を明示的に UK に設定します
-        if USE_STRICT_CLIENT_MODE:
-            set_ship_to_uk(page)
+        # ⚠️ 専用プロファイルのクッキーを利用するため、配送先の手動設定は行いません
             
         # JS実行後の完全なHTMLを取得
         raw_html = page.html
