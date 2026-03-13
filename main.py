@@ -96,7 +96,7 @@ def main():
     print(" eBay リサーチ部隊 - 国内最安値判定ツール")
     print("="*60)
     
-    database.init_db()
+    database.setup_db()
     last_url = ""
     
     while True:
@@ -162,7 +162,7 @@ def main():
                 for item in base_filtered:
                     title_norm = normalize_text(item.get("title", ""))
                     has_model = (model_name in title_norm) if len(model_name) >= 3 else False
-                    series_head = normalize_text(series_name.split()[0]) if series_name.split() else ""
+                    series_head = normalize_text(series_name.split()[0]) if series_head in title_norm else ""
                     has_series = (series_name in title_norm or (len(series_head) >= 2 and series_head in title_norm)) if len(series_name) >= 2 else False
 
                     if has_model or has_series:
