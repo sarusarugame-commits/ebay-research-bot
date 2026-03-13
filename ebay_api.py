@@ -2,7 +2,24 @@ import requests
 import base64
 import time
 import json
-from config import EBAY_APP_ID, EBAY_CLIENT_SECRET
+import functools
+from config import EBAY_APP_ID, EBAY_CLIENT_SECRET, MAX_RETRIES, RETRY_BASE_DELAY
+
+def retry(max_retries=MAX_RETRIES, base_delay=RETRY_BASE_DELAY):
+    """リトライ用デコレータ"""
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            for attempt in range(1, max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    if attempt == max_retries:
+                        raise e
+                    time.sleep(base_delay * attempt)
+        return wrapper
+    return decorator
+
 
 # キャッシュ用変数をグローバルに保持
 _EBAY_TOKEN = None
@@ -67,20 +84,32 @@ def search_ebay(query, limit=10, marketplace_id='EBAY_US'):
         resp = requests.get(url, headers=headers, params=params, timeout=10)
         resp.raise_for_status()
         data = resp.json()
-        return data.get("itemSummaries", [])
+        
+        items = []
+        for item in data.get("itemSummaries", []):
+            items.append({
+                "item_id": item["itemId"],
+                "title": item["title"],
+                "price": item.get("price", {}).get("value"),
+                "currency": item.get("price", {}).get("currency"),
+                "page_url": item.get("itemWebUrl"),
+                "img_url": item.get("image", {}).get("imageUrl"),
+                "delivery_options": item.get("deliveryOptions", [])
+            })
+        return items
     except Exception as e:
         print(f"[!] eBay検索エラー: {e}")
         return []
 
 def get_item_details(item_id, marketplace_id='EBAY_US'):
     """
-    eBay Browse API (GET item) を使用して詳細情報を取得する。
+    eBay Browse API (getItem) を使用して商品の詳細情報を取得する。
     """
     token = get_ebay_token()
     if not token:
         return None
 
-    # IDの形式を正規化 (v1|ID|0 の形式が必要な場合がある)
+    # IDが v1|...|0 の形式でない場合は補完する
     full_id = item_id if "|" in item_id else f"v1|{item_id}|0"
     url = f"https://api.ebay.com/buy/browse/v1/item/{full_id}"
     headers = {
@@ -93,19 +122,18 @@ def get_item_details(item_id, marketplace_id='EBAY_US'):
         resp.raise_for_status()
         data = resp.json()
         
-        # 送料の簡易取得
-        shipping_cost = 0.0
-        shippings = data.get("estimatedAvailabilities", [{}])[0].get("shippingOptions", [])
-        if shippings:
-            sh_val = shippings[0].get("shippingCost", {}).get("value", "0.0")
-            shipping_cost = float(sh_val)
-        
-        # 配送可否
-        is_shippable = data.get("shipToLocations", {}).get("regionIncluded", [])
-        
+        # 送料情報の簡易抽出
+        shipping_cost = 0
+        is_shippable = False
+        shipping_options = data.get("estimatedAvailabilities", [])
+        # Browse APIの getItem では詳細な送料計算には別途リクエストが必要な場合が多いが、
+        # ここでは基本的な配送可否のみチェック
+        if data.get("shipToLocations"):
+            is_shippable = True
+            
         return {
-            "title": data.get("title"),
-            "price_usd": float(data.get("price", {}).get("value", 0.0)),
+            "item_id": item_id,
+            "price": data.get("price", {}).get("value"),
             "currency": data.get("price", {}).get("currency"),
             "shipping_cost": shipping_cost,
             "is_shippable": is_shippable,
@@ -147,14 +175,13 @@ def get_multiple_items_images_api(item_ids, marketplace_id='EBAY_US', max_worker
                         urls.append(u)
                 return i_id, urls
         except Exception as e:
-            pass
+            print(f"    [!] API画像取得エラー(ID:{i_id}): {e}")
         return i_id, []
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(fetch_single, i_id) for i_id in item_ids]
+        futures = {executor.submit(fetch_single, i_id): i_id for i_id in item_ids}
         for future in as_completed(futures):
-            i_id, images = future.result()
-            if images:
-                results[i_id] = images
-                
+            i_id, urls = future.result()
+            results[i_id] = urls
+            
     return results
