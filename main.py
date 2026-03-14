@@ -139,28 +139,19 @@ def main():
 
         print(f"\n[*] 処理対象商品数: {len(item_ids)} 件")
         
-        # ターゲット選定ロジック: リストの中から「未調査」かつ「正常品」の1件を選び出し、リサーチを実行する
+        # ターゲット選定ロジック: リストの中から「未調査」の1件を選び出し、リサーチを実行する
         target_item_info = None
-        _EXCLUDE_WORDS_EBAY = ["junk", "repair", "parts", "ジャンク", "部品取り", "修理", "故障"]
         
-        # 古い順（リストの最後の方）に未調査があるかチェック
-        for item_info in reversed(list_items):
+        for item_info in reversed(list_items) if 'list_items' in locals() else [{'id': id} for id in item_ids]:
             item_id = item_info['id']
             if database.is_researched(item_id):
-                continue
-            
-            # タイトルによる一次フィルタ
-            title = item_info.get('title', '').lower()
-            if any(w in title for w in _EXCLUDE_WORDS_EBAY):
-                print(f"    [SKIP] ジャンク疑い(タイトル): {item_id} - {title[:30]}")
-                database.mark_as_researched(item_id, title="JUNK_SKIPPED", weight="SKIPPED", dimensions="JUNK")
                 continue
             
             target_item_info = item_info
             break
 
         if not target_item_info:
-            print("\n[OK] 処理対象の新しい商品は見つかりませんでした（すべて既知またはフィルタ済み）。")
+            print("\n[OK] 処理対象の新しい商品は見つかりませんでした。")
             continue
 
         ebay_item_id = target_item_info['id']
@@ -178,12 +169,7 @@ def main():
             ebay_title = ebay_specs['title']
             ebay_img_url = ebay_specs['img_urls'][0] if ebay_specs.get('img_urls') else ""
             
-            # 二次フィルタ: 詳細スペック（商品説明）によるジャンクチェック
-            spec_text = (ebay_specs.get('description', '') + " " + ebay_specs.get('item_specifics_text', '')).lower()
-            if any(w in spec_text for w in _EXCLUDE_WORDS_EBAY):
-                print(f"    [SKIP] ジャンク疑い(詳細): {ebay_item_id} - 説明文に異常検知")
-                database.mark_as_researched(ebay_item_id, title="JUNK_SKIPPED_DETAIL", weight="SKIPPED", dimensions="JUNK_DETAIL")
-                continue
+            # (eBay側の二次フィルタは削除されました)
 
             print(f"    - Title: {ebay_title}")
             print(f"    - Price: ${ebay_specs.get('price_usd', 0)}")
