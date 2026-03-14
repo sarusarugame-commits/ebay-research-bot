@@ -40,7 +40,7 @@ from config import (
     YAHOO_CLIENT_ID,
 )
 import database
-from ebay_api import get_item_details, get_multiple_items_images_api
+from ebay_api import get_item_details
 from mercari_scraper import search_mercari, search_rakuma, scrape_item_data
 from surugaya_scraper import search_surugaya, scrape_surugaya_item
 from llm_vision_judge import estimate_weight_with_llm, analyze_item_safety_and_tariff
@@ -65,8 +65,11 @@ def get_fresh_browser():
     """ツール専用プロファイルを使用してブラウザを起動する"""
     co = ChromiumOptions()
     co.set_user_data_path('./chrome_profile')
-    co.headless(False)
+    co.headless(False) # ユーザー確認用にヘッドレス解除
     co.set_argument("--window-size=1280,720")
+    # ステルス性能向上のための追加オプション
+    co.set_argument('--disable-blink-features=AutomationControlled')
+    co.set_user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
     return ChromiumPage(co)
 
 def extract_specs_from_text(text):
@@ -94,11 +97,10 @@ def adjust_dimensions(d_str):
 
 def main():
     print("="*60)
-    print(" eBay リサーチ部隊 - 国内最安値判定ツール")
+    print(" eBay リサーチ部隊 - 国内最安値判定ツール (Restored stable version)")
     print("="*60)
     
     database.setup_db()
-    
     last_url = ""
     
     while True:
@@ -114,11 +116,13 @@ def main():
 
         # URL種別の判定
         item_ids = []
+        list_items = []
         if '/itm/' in target_url:
             # 単一商品
             item_id_match = re.search(r'/itm/(\d+)', target_url)
             if item_id_match:
                 item_ids.append(item_id_match.group(1))
+                list_items.append({'id': item_id_match.group(1)})
         elif '/sch/' in target_url or 'ebay.com/usr/' in target_url:
             # 検索結果またはセラーの商品一覧
             print("\n[*] 一覧URLを検知しました。商品リストを取得中...")
@@ -135,176 +139,205 @@ def main():
 
         print(f"\n[*] 処理対象商品数: {len(item_ids)} 件")
         
-        for ebay_item_id in item_ids:
-            print(f"\n{'-'*40}")
-            print(f"[*] ターゲットeBay商品: {ebay_item_id}")
+        # ターゲット選定ロジック: リストの中から「未調査」かつ「正常品」の1件を選び出し、リサーチを実行する
+        target_item_info = None
+        _EXCLUDE_WORDS_EBAY = ["junk", "repair", "parts", "ジャンク", "部品取り", "修理", "故障"]
+        
+        # 古い順（リストの最後の方）に未調査があるかチェック
+        for item_info in reversed(list_items):
+            item_id = item_info['id']
+            if database.is_researched(item_id):
+                continue
             
-            browser = get_fresh_browser()
-            try:
-                # 1. eBayスペック取得
-                ebay_specs = scrape_ebay_item_specs(ebay_item_id, browser)
-                if not ebay_specs or not ebay_specs.get('title'):
-                    print(f"[!] eBay情報(ID:{ebay_item_id})の取得に失敗しました。")
-                    continue
+            # タイトルによる一次フィルタ
+            title = item_info.get('title', '').lower()
+            if any(w in title for w in _EXCLUDE_WORDS_EBAY):
+                print(f"    [SKIP] ジャンク疑い(タイトル): {item_id} - {title[:30]}")
+                database.mark_as_researched(item_id, title="JUNK_SKIPPED", weight="SKIPPED", dimensions="JUNK")
+                continue
+            
+            target_item_info = item_info
+            break
+
+        if not target_item_info:
+            print("\n[OK] 処理対象の新しい商品は見つかりませんでした（すべて既知またはフィルタ済み）。")
+            continue
+
+        ebay_item_id = target_item_info['id']
+        print(f"\n{'-'*40}")
+        print(f"[*] ターゲット選定完了: {ebay_item_id}")
+        
+        browser = get_fresh_browser()
+        try:
+            # 1. eBayスペック取得
+            ebay_specs = scrape_ebay_item_specs(ebay_item_id, browser)
+            if not ebay_specs or not ebay_specs.get('title'):
+                print(f"[!] eBay情報(ID:{ebay_item_id})の取得に失敗しました。")
+                continue
+            
+            ebay_title = ebay_specs['title']
+            ebay_img_url = ebay_specs['img_urls'][0] if ebay_specs.get('img_urls') else ""
+            
+            # 二次フィルタ: 詳細スペック（商品説明）によるジャンクチェック
+            spec_text = (ebay_specs.get('description', '') + " " + ebay_specs.get('item_specifics_text', '')).lower()
+            if any(w in spec_text for w in _EXCLUDE_WORDS_EBAY):
+                print(f"    [SKIP] ジャンク疑い(詳細): {ebay_item_id} - 説明文に異常検知")
+                database.mark_as_researched(ebay_item_id, title="JUNK_SKIPPED_DETAIL", weight="SKIPPED", dimensions="JUNK_DETAIL")
+                continue
+
+            print(f"    - Title: {ebay_title}")
+            print(f"    - Price: ${ebay_specs.get('price_usd', 0)}")
+            
+            if not ebay_img_url:
+                print("[!] 画像URLが取得できなかったため、リサーチをスキップします。")
+                continue
+
+            # 2. 日本語名の特定
+            print("\n[*] LLMで日本語商品名を特定中...")
+            name_data = extract_product_name(ebay_title, scored_candidates=[], img_url=ebay_img_url)
+            final_name = name_data.get("full_name", "特定不能")
+            print(f" -> 最終確定した日本語名: {final_name}")
+
+            # 3. 国内並列検索
+            print(f"\n[*] 国内5大プラットフォームを並列調査中...")
+            
+            import unicodedata
+            def normalize_text(text):
+                if not text: return ""
+                return unicodedata.normalize("NFKC", text).lower().strip()
+
+            model_name = normalize_text(name_data.get("model", ""))
+            series_name = normalize_text(name_data.get("series", ""))
+
+            def collect_candidates(candidates, platform):
+                if not candidates: return []
+                print(f"[*] {platform}: {len(candidates)} 件の候補を収集中...")
                 
-                ebay_title = ebay_specs['title']
-                ebay_img_url = ebay_specs['img_urls'][0] if ebay_specs.get('img_urls') else ""
-                print(f"    - Title: {ebay_title}")
-                print(f"    - Price: ${ebay_specs.get('price_usd', 0)}")
+                _EXCLUDE_WORDS = ["レンタル", "rental", "パーツ", "修理", "ジャンク", "部品取り", "訳あり", "難あり"]
+                base_filtered = []
+                for item in candidates:
+                    title_norm = normalize_text(item.get("title", ""))
+                    if any(w in title_norm for w in _EXCLUDE_WORDS): continue
+                    base_filtered.append(item)
+
+                keyword_filtered = []
+                for item in base_filtered:
+                    title_norm = normalize_text(item.get("title", ""))
+                    has_model = (model_name in title_norm) if len(model_name) >= 3 else False
+                    series_parts = series_name.split()
+                    series_head = normalize_text(series_parts[0]) if series_parts else ""
+                    has_series = (series_name in title_norm or (len(series_head) >= 2 and series_head in title_norm)) if len(series_name) >= 2 else False
+
+                    if has_model or has_series:
+                        item["platform"] = platform
+                        keyword_filtered.append(item)
                 
-                if not ebay_img_url:
-                    print("[!] 画像URLが取得できなかったため、リサーチをスキップします。")
-                    continue
+                if not keyword_filtered:
+                    keyword_filtered = base_filtered
+                    for item in keyword_filtered: item["platform"] = platform
 
-                # 2. 日本語名の特定
-                print("\n[*] LLMで日本語商品名を特定中...")
-                name_data = extract_product_name(ebay_title, scored_candidates=[], img_url=ebay_img_url)
-                final_name = name_data.get("full_name", "特定不能")
-                print(f" -> 最終確定した日本語名: {final_name}")
+                collected = []
+                to_scrape = keyword_filtered[:3]
+                for item in to_scrape:
+                    try:
+                        detail = None
+                        if platform in ["メルカリ", "ラクマ"]: detail = scrape_item_data(item["page_url"], browser)
+                        elif platform == "駿河屋": detail = scrape_surugaya_item(item["page_url"], browser)
+                        elif platform == "Yahooショッピング": detail = scrape_yahoo_item(item["page_url"], browser)
+                        
+                        if detail: item.update(detail)
+                        
+                        condition_text = normalize_text(item.get("condition", ""))
+                        desc_text = normalize_text(item.get("description", ""))
+                        if any(w in condition_text for w in ["全体的に状態が悪い", "ジャンク", "難あり", "訳あり"]): continue
+                        if "ジャンク" in desc_text: continue
+                        
+                        if not item.get("_all_img_urls") and item.get("img_url"):
+                            item["_all_img_urls"] = [item["img_url"]]
+                        
+                        if item.get("_all_img_urls"): collected.append(item)
+                    except Exception as e:
+                        print(f"    [!] {platform} 詳細取得エラー: {e}")
+                return collected
 
-                # 3. 国内並列検索
-                print(f"\n[*] 国内5大プラットフォームを並列調査中...")
+            all_candidates = []
+            search_query = final_name
+            
+            tasks = [
+                ("メルカリ", lambda: search_mercari(search_query, browser)),
+                ("ラクマ", lambda: search_rakuma(search_query, browser)),
+                ("楽天市場", lambda: search_rakuten(search_query)),
+                ("Yahooショッピング", lambda: search_yahoo(search_query)),
+                ("駿河屋", lambda: search_surugaya(search_query, browser))
+            ]
+
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = [executor.submit(lambda tk: (tk[0], tk[1]()), tk) for tk in tasks]
+                for f in as_completed(futures):
+                    p_name, res = f.result()
+                    all_candidates.extend(collect_candidates(res, p_name))
+
+            if not all_candidates:
+                print("[!] 有効な国内候補が見つかりませんでした。")
+                continue
+
+            # 4. LLM 画像判定 (並列)
+            print(f"[*] AI判定開始 ({len(all_candidates)} 件)...")
+            final_best = None
+            
+            def _judge(cand):
+                is_match, cond = verify_model_match(
+                    ebay_img_url, 
+                    cand["_all_img_urls"][0], 
+                    model_name, 
+                    cand.get("condition", "不明"),
+                    ref_title=ebay_title,
+                    cand_title=cand["title"]
+                )
+                return cand, is_match, cond
+
+            with ThreadPoolExecutor(max_workers=5) as ex:
+                sorted_cands = sorted(all_candidates, key=lambda x: int(re.sub(r'\D', '', str(x.get('price', '999999')))))
+                judge_futures = [ex.submit(_judge, c) for c in sorted_cands]
+                for f in as_completed(judge_futures):
+                    cand, ok, cond = f.result()
+                    if ok:
+                        final_best = cand
+                        final_best["llm_condition"] = cond
+                        break
+            
+            if final_best:
+                # 最終結果記録
+                res_data = {
+                    "ebay_id": ebay_item_id,
+                    "ebay_title": ebay_title,
+                    "ebay_price_usd": ebay_specs.get('price_usd', 0),
+                    "ebay_url": f"https://www.ebay.com/itm/{ebay_item_id}",
+                    "domestic_best_price": final_best.get("price"),
+                    "domestic_best_url": final_best.get("page_url"),
+                    "domestic_platform": final_best.get("platform"),
+                    "condition": final_best.get("llm_condition"),
+                }
+                write_to_sheet(res_data)
+                database.mark_as_researched(
+                    ebay_item_id,
+                    platform=final_best.get("platform"),
+                    title=final_best.get("title"),
+                    price=final_best.get("price"),
+                    condition=final_best.get("llm_condition"),
+                    url=final_best.get("page_url")
+                )
                 
-                model_name = name_data.get("model", "").lower()
-                series_name = name_data.get("series", "").lower()
+                print(f"\n{GREEN}✨ 最安値発見: {final_best['platform']} - ¥{final_best['price']:,}{RESET}")
+                print(f"URL: {hyperlink(final_best['page_url'])}")
+            else:
+                print("[!] 一致する商品は見つかりませんでした。")
 
-                def normalize_text(text):
-                    if not text: return ""
-                    return text.lower().strip()
-
-                def collect_candidates(candidates, platform):
-                    if not candidates: return []
-                    print(f"[*] {platform}: {len(candidates)} 件の候補を収集中...")
-                    
-                    _EXCLUDE_WORDS = ["レンタル", "rental", "パーツ", "修理", "ジャンク", "部品取り", "訳あり", "難あり"]
-                    base_filtered = []
-                    for item in candidates:
-                        title_norm = normalize_text(item.get("title", ""))
-                        if any(w in title_norm for w in _EXCLUDE_WORDS): continue
-                        base_filtered.append(item)
-
-                    keyword_filtered = []
-                    for item in base_filtered:
-                        title_norm = normalize_text(item.get("title", ""))
-                        has_model = (model_name in title_norm) if len(model_name) >= 3 else False
-                        series_parts = series_name.split()
-                        series_head = normalize_text(series_parts[0]) if series_parts else ""
-                        has_series = (series_name in title_norm or (len(series_head) >= 2 and series_head in title_norm)) if len(series_name) >= 2 else False
-
-                        if has_model or has_series:
-                            item["platform"] = platform
-                            keyword_filtered.append(item)
-                    
-                    if not keyword_filtered:
-                        keyword_filtered = base_filtered
-                        for item in keyword_filtered: item["platform"] = platform
-
-                    # 詳細情報の取得 (上位3件)
-                    collected = []
-                    to_scrape = keyword_filtered[:3]
-                    for item in to_scrape:
-                        try:
-                            detail = None
-                            if platform in ["メルカリ", "ラクマ"]: detail = scrape_item_data(item["page_url"], browser)
-                            elif platform == "駿河屋": detail = scrape_surugaya_item(item["page_url"], browser)
-                            elif platform == "Yahooショッピング": detail = scrape_yahoo_item(item["page_url"], browser)
-                            
-                            if detail: item.update(detail)
-                            
-                            # ジャンク再チェック
-                            condition_text = normalize_text(item.get("condition", ""))
-                            desc_text = normalize_text(item.get("description", ""))
-                            if any(w in condition_text for w in ["全体的に状態が悪い", "ジャンク", "難あり", "訳あり"]): continue
-                            if "ジャンク" in desc_text: continue
-                            
-                            if not item.get("_all_img_urls") and item.get("img_url"):
-                                item["_all_img_urls"] = [item["img_url"]]
-                            
-                            if item.get("_all_img_urls"): collected.append(item)
-                        except Exception as e:
-                            print(f"    [!] {platform} 詳細取得エラー: {e}")
-                    return collected
-
-                all_candidates = []
-                search_query = final_name
-                
-                tasks = [
-                    ("メルカリ", lambda: search_mercari(search_query, browser)),
-                    ("ラクマ", lambda: search_rakuma(search_query, browser)),
-                    ("楽天市場", lambda: search_rakuten(search_query)),
-                    ("Yahooショッピング", lambda: search_yahoo(search_query)),
-                    ("駿河屋", lambda: search_surugaya(search_query, browser))
-                ]
-
-                # 各プラットフォームのタスク実行
-                with ThreadPoolExecutor(max_workers=5) as executor:
-                    futures = [executor.submit(lambda tk: (tk[0], tk[1]()), tk) for tk in tasks]
-                    for f in as_completed(futures):
-                        p_name, res = f.result()
-                        all_candidates.extend(collect_candidates(res, p_name))
-
-                if not all_candidates:
-                    print("[!] 有効な国内候補が見つかりませんでした。")
-                    continue
-
-                # 4. LLM 画像判定 (並列)
-                print(f"[*] AI判定開始 ({len(all_candidates)} 件)...")
-                final_best = None
-                
-                def _judge(cand):
-                    is_match, cond = verify_model_match(
-                        ebay_img_url, 
-                        cand["_all_img_urls"][0], 
-                        model_name, 
-                        cand.get("condition", "不明"),
-                        ref_title=ebay_title,
-                        cand_title=cand["title"]
-                    )
-                    return cand, is_match, cond
-
-                with ThreadPoolExecutor(max_workers=5) as ex:
-                    # 価格順（送料込み）にソートして判定
-                    sorted_cands = sorted(all_candidates, key=lambda x: int(re.sub(r'\D', '', str(x.get('price', '999999')))))
-                    judge_futures = [ex.submit(_judge, c) for c in sorted_cands]
-                    for f in as_completed(judge_futures):
-                        cand, ok, cond = f.result()
-                        if ok:
-                            final_best = cand
-                            final_best["llm_condition"] = cond
-                            break
-                
-                if final_best:
-                    # 最終結果記録
-                    res_data = {
-                        "ebay_id": ebay_item_id,
-                        "ebay_title": ebay_title,
-                        "ebay_price_usd": ebay_specs.get('price_usd', 0),
-                        "ebay_url": f"https://www.ebay.com/itm/{ebay_item_id}",
-                        "domestic_best_price": final_best.get("price"),
-                        "domestic_best_url": final_best.get("page_url"),
-                        "domestic_platform": final_best.get("platform"),
-                        "condition": final_best.get("llm_condition"),
-                    }
-                    write_to_sheet(res_data)
-                    database.mark_as_researched(
-                        ebay_item_id,
-                        platform=final_best.get("platform"),
-                        title=final_best.get("title"),
-                        price=final_best.get("price"),
-                        condition=final_best.get("llm_condition"),
-                        url=final_best.get("page_url")
-                    )
-                    
-                    print(f"\n{GREEN}✨ 最安値発見: {final_best['platform']} - ¥{final_best['price']:,}{RESET}")
-                    print(f"URL: {hyperlink(final_best['page_url'])}")
-                else:
-                    print("[!] 一致する商品は見つかりませんでした。")
-
-            except Exception as e:
-                print(f"[!] 商品(ID:{ebay_item_id})の処理中にエラー: {e}")
-                traceback.print_exc()
-            finally:
-                browser.quit()
+        except Exception as e:
+            print(f"[!] 商品(ID:{ebay_item_id})の処理中にエラー: {e}")
+            traceback.print_exc()
+        finally:
+            browser.quit()
 
 if __name__ == "__main__":
     main()

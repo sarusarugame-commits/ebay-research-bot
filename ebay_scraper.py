@@ -1,12 +1,12 @@
 from DrissionPage import ChromiumPage, ChromiumOptions
 from selectolax.parser import HTMLParser
-from scrapling import Fetcher
 from bs4 import BeautifulSoup
 import time
 import re
 import os
 import random
 import json
+import datetime
 
 # ======================================================================
 # ⚙️ 動作モード設定（True/False で切り替え）
@@ -48,83 +48,33 @@ def handle_ebay_popups(tab):
     except:
         pass
 
-def set_ship_to_uk(page):
-    """eBayの配送先(Ship To)をUK(イギリス)に設定する強化版"""
-    try:
-        # 1. 配送先ボタンの特定
-        # ブラウザ調査の結果、最も確実なのは button.gh-ship-to__menu です
-        ship_btn = page.ele('css:button.gh-ship-to__menu', timeout=3) or \
-                   page.ele('xpath://button[contains(@class, "gh-ship-to__menu") or contains(@aria-label, "お届け先") or contains(@aria-label, "Ship to")]', timeout=2) or \
-                   page.ele('css:.srp-controls--shipping-location button, .srp-shipping-location__flyout button', timeout=2)
+def parse_ebay_date(date_str):
+    """
+    eBayの表示日付（"Mar 4, 2024" 等）を datetime オブジェクトに変換する
+    """
+    if not date_str: return None
+    now = datetime.datetime.now()
+    # 記号の正規化
+    clean_str = date_str.replace('·', ' ').replace(',', ' ').strip()
 
-        if not ship_btn:
-            print("[DEBUG] 配送先設定ボタンが見つかりませんでした。")
-            return
+    # 月の定義
+    month_map = {'jan':1,'feb':2,'mar':3,'apr':4,'may':5,'jun':6,'jul':7,'aug':8,'sep':9,'oct':10,'nov':11,'dec':12}
+    
+    # パターン1: Mar 4 20:37 (年がない場合は今年とする)
+    m1 = re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})', clean_str, re.I)
+    if m1:
+        month = month_map.get(m1.group(1).lower())
+        day = int(m1.group(2))
+        return datetime.datetime(now.year, month, day)
 
-        current_text = ship_btn.text or ship_btn.attr('aria-label') or ""
-        print(f"[*] 現在の配送先表示: {current_text}")
-        
-        if any(x in current_text for x in ['UK', 'GB', 'United Kingdom', 'イギリス', 'England']):
-            print("[*] Ship To は既に UK に設定されています。")
-            return
-        
-        print(f"[*] Ship To を UK に変更開始 (ターゲットボタンを検知)")
-        ship_btn.click()
-        time.sleep(2)
-        
-        # 2. 国選択ドロップダウンの特定と選択
-        # セレクタをさらに強化
-        country_sel = page.ele('xpath://select[contains(@id, "country") or contains(@id, "shipto") or contains(@aria-label, "Country") or contains(@aria-label, "国")]')
-        if not country_sel:
-            print("[DEBUG] 国選択ドロップダウンが見つかりません。")
-        else:
-            print("[DEBUG] 国を UK に設定中...")
-            try:
-                # 複数の方法で試行
-                if not country_sel.select.by_text('United Kingdom - GBR'):
-                    if not country_sel.select.by_value('GB'):
-                        country_sel.select.by_index(2) # 大抵上の方
-            except Exception as e:
-                print(f"[DEBUG] 国選択エラー: {e}")
-            time.sleep(1)
+    # パターン2: 4 Mar 20:37
+    m2 = re.search(r'(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)', clean_str, re.I)
+    if m2:
+        day = int(m2.group(1))
+        month = month_map.get(m2.group(2).lower())
+        return datetime.datetime(now.year, month, day)
 
-        # 3. 郵便番号入力 (もし表示されていれば入力したほうが確実な場合があるため復活)
-        zip_input = page.ele('xpath://input[contains(@id, "zip") or @aria-label="Zip code" or @autocomplete="postal-code"]', timeout=1)
-        if zip_input:
-            print("[DEBUG] 郵便番号を入力します...")
-            zip_input.clear()
-            zip_input.input('E1 6AN')
-            time.sleep(1)
-
-        # 4. 完了/確定ボタンのクリック
-        # いくつかのパターンを順番に試す
-        done_selectors = [
-            'xpath://button[text()="Done" or text()="完了" or text()="Apply" or text()="適用"]',
-            'xpath://input[@type="submit" and (@value="Go" or @value="完了")]',
-            '#shipto-confirm-submit',
-            '.shipto__confirm'
-        ]
-        
-        done_clicked = False
-        for sel in done_selectors:
-            go_btn = page.ele(sel, timeout=1)
-            if go_btn:
-                print(f"[DEBUG] 確定ボタンが見つかりました ({sel})。クリックします。")
-                go_btn.click()
-                done_clicked = True
-                break
-        
-        if done_clicked:
-            page.wait.load_start()
-            time.sleep(4)
-            print("[*] 配送先変更処理を完了しました。ページ更新を待機しました。")
-        else:
-            print("[DEBUG] 確定ボタン（Done/Go）が見つかりませんでした。")
-
-    except Exception as e:
-        print(f"[DEBUG] Ship To 変更中の致命的エラー: {e}")
-        import traceback
-        traceback.print_exc()
+    return None
 
 def scrape_ebay_newest_items(search_url, page):
     """
@@ -132,23 +82,19 @@ def scrape_ebay_newest_items(search_url, page):
     """
     print(f"[*] eBayアクセス開始: {search_url}", flush=True)
     try:
+        now = datetime.datetime.now()
+        # 1-15日なら当月1日以降、16-月末なら当月16日以降を対象とする
+        limit_date = datetime.datetime(now.year, now.month, 1) if now.day <= 15 else datetime.datetime(now.year, now.month, 16)
+        print(f"[*] フィルタ基準日: {limit_date.strftime('%Y-%m-%d')}")
+
         # DrissionPage によるページ取得
         page.get(search_url)
         page.wait.load_start()
         time.sleep(2)
         handle_ebay_popups(page)
         
-        # ⚠️ 専用プロファイルのクッキーを利用するため、配送先の手動設定は行いません
-            
         # JS実行後の完全なHTMLを取得
         raw_html = page.html
-            
-        # ⚠️ 【重要】前回の抽出漏れの真の原因 ⚠️
-        # 先ほどの debug_dump.html を解析した結果、実はShipToは既にUKになっており、HTML内には【60件分の全データ】が存在していました。
-        # にもかかわらず3件しか取れ難かったのは、Python標準の `BeautifulSoup(html.parser)` が、eBayの巨大で複雑なHTMLの解析に耐えきれず、
-        # 途中でパースを強制終了してしまっていたためです（そのため3件しか見えなかった）。
-        # そこで、最も寛容で強力なパーサーである `selectolax` に戻すことで、隠れていた60件すべてを一気に引き出します！
-        
         tree = HTMLParser(raw_html)
         
         item_selectors = [
@@ -178,6 +124,19 @@ def scrape_ebay_newest_items(search_url, page):
         for elem in all_elements:
             item_id = "N/A"
             try:
+                # 日付チェック
+                date_tag = elem.css_first('.s-item__listingDate, .s-item__title-tag')
+                date_text = date_tag.text(strip=True) if date_tag else elem.text(strip=True)
+                listing_date = parse_ebay_date(date_text)
+                
+                # "New Listing" があれば最新とみなす
+                if not listing_date and ("new listing" in date_text.lower() or "新規出品" in date_text):
+                    listing_date = now
+                
+                # 日付フィルタ適用
+                if listing_date and listing_date < limit_date:
+                    continue
+
                 item_url = ""
                 link_targets = ['a.s-item__link', 'a.s-card__link', 'a[href*="/itm/"]', 'a']
                 for l_sel in link_targets:
@@ -246,14 +205,14 @@ def scrape_ebay_newest_items(search_url, page):
                     'price': price,
                     'url': item_url,
                     'image_url': image_url,
-                    'timestamp': time.time()
+                    'timestamp': listing_date.timestamp() if listing_date else time.time()
                 })
                 seen_ids.add(item_id)
                 
             except Exception:
                 continue
             
-        print(f" -> {len(extracted_items)} 件の本物の商品を抽出しました。", flush=True)
+        print(f" -> {len(extracted_items)} 件の商品を抽出しました（期間内のみ）。", flush=True)
         return extracted_items
         
     except Exception as e:
@@ -365,6 +324,6 @@ if __name__ == "__main__":
     test_url = "https://www.ebay.com/sch/i.html?_ssn=greenepron&_sop=10"
     items = scrape_ebay_newest_items(test_url, page)
     if items:
-        specs = specs = scrape_ebay_item_specs(items[0]['id'], page)
+        specs = scrape_ebay_item_specs(items[0]['id'], page)
         print(specs)
     if page: page.quit()
