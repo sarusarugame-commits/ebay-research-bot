@@ -279,59 +279,58 @@ def main():
 
             if not all_candidates:
                 print("[!] 有効な国内候補が見つかりませんでした。")
-                continue
-
-            # 4. LLM 画像判定 (並列)
-            print(f"[*] AI判定開始 ({len(all_candidates)} 件)...")
-            final_best = None
-            
-            def _judge(cand):
-                is_match, cond = verify_model_match(
-                    ebay_img_url, 
-                    cand["_all_img_urls"][0], 
-                    model_name, 
-                    cand.get("condition", "不明"),
-                    ref_title=ebay_title,
-                    cand_title=cand["title"]
-                )
-                return cand, is_match, cond
-
-            with ThreadPoolExecutor(max_workers=5) as ex:
-                sorted_cands = sorted(all_candidates, key=lambda x: int(re.sub(r'\D', '', str(x.get('price', '999999')))))
-                judge_futures = [ex.submit(_judge, c) for c in sorted_cands]
-                for f in as_completed(judge_futures):
-                    cand, ok, cond = f.result()
-                    if ok:
-                        final_best = cand
-                        final_best["llm_condition"] = cond
-                        break
-            
-            if final_best:
-                # 最終結果記録
-                res_data = {
-                    "ebay_id": ebay_item_id,
-                    "ebay_title": ebay_title,
-                    "ebay_price_usd": ebay_specs.get('price_usd', 0),
-                    "ebay_url": f"https://www.ebay.com/itm/{ebay_item_id}",
-                    "domestic_best_price": final_best.get("price"),
-                    "domestic_best_url": final_best.get("page_url"),
-                    "domestic_platform": final_best.get("platform"),
-                    "condition": final_best.get("llm_condition"),
-                }
-                write_to_sheet(res_data)
-                database.mark_as_researched(
-                    ebay_item_id,
-                    platform=final_best.get("platform"),
-                    title=final_best.get("title"),
-                    price=final_best.get("price"),
-                    condition=final_best.get("llm_condition"),
-                    url=final_best.get("page_url")
-                )
-                
-                print(f"\n{GREEN}✨ 最安値発見: {final_best['platform']} - ¥{final_best['price']:,}{RESET}")
-                print(f"URL: {hyperlink(final_best['page_url'])}")
             else:
-                print("[!] 一致する商品は見つかりませんでした。")
+                # 4. LLM 画像判定 (並列)
+                print(f"[*] AI判定開始 ({len(all_candidates)} 件)...")
+                final_best = None
+                
+                def _judge(cand):
+                    is_match, cond = verify_model_match(
+                        ebay_img_url, 
+                        cand["_all_img_urls"][0], 
+                        model_name, 
+                        cand.get("condition", "不明"),
+                        ref_title=ebay_title,
+                        cand_title=cand["title"]
+                    )
+                    return cand, is_match, cond
+
+                with ThreadPoolExecutor(max_workers=5) as ex:
+                    sorted_cands = sorted(all_candidates, key=lambda x: int(re.sub(r'\D', '', str(x.get('price', '999999')))))
+                    judge_futures = [ex.submit(_judge, c) for c in sorted_cands]
+                    for f in as_completed(judge_futures):
+                        cand, ok, cond = f.result()
+                        if ok:
+                            final_best = cand
+                            final_best["llm_condition"] = cond
+                            break
+                
+                if final_best:
+                    # 最終結果記録
+                    res_data = {
+                        "ebay_id": ebay_item_id,
+                        "ebay_title": ebay_title,
+                        "ebay_price_usd": ebay_specs.get('price_usd', 0),
+                        "ebay_url": f"https://www.ebay.com/itm/{ebay_item_id}",
+                        "domestic_best_price": final_best.get("price"),
+                        "domestic_best_url": final_best.get("page_url"),
+                        "domestic_platform": final_best.get("platform"),
+                        "condition": final_best.get("llm_condition"),
+                    }
+                    write_to_sheet(res_data)
+                    database.mark_as_researched(
+                        ebay_item_id,
+                        platform=final_best.get("platform"),
+                        title=final_best.get("title"),
+                        price=final_best.get("price"),
+                        condition=final_best.get("llm_condition"),
+                        url=final_best.get("page_url")
+                    )
+                    
+                    print(f"\n{GREEN}✨ 最安値発見: {final_best['platform']} - ¥{final_best['price']:,}{RESET}")
+                    print(f"URL: {hyperlink(final_best['page_url'])}")
+                else:
+                    print("[!] 一致する商品は見つかりませんでした。")
 
         except Exception as e:
             print(f"[!] 商品(ID:{ebay_item_id})の処理中にエラー: {e}")
